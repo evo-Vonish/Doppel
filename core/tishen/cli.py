@@ -378,8 +378,21 @@ def cmd_events(args) -> int:
         return 1
     with StateDB() as db:
         _get_record_or_exit(db, args.id)
-    # 事件库路径约定：$TISHEN_HOME/events/<id>.db（由 M3 daemon 产出/同步，见 SPEC-M2M3 §2.1 store.py）
-    events_db = str(tishen_home() / "events" / f"{args.id}.db")
+    # 事件库权威路径：M3 daemon 在容器内写 /persona/logs/events/events.db（即替身 log 卷）。
+    # 宿主侧经 docker 卷目录直读；卷路径不存在时回退 $TISHEN_HOME/events/<id>.db 开发约定。
+    # （主代理合并 m2/m3 时对齐：Coder C 原约定仅宿主侧路径，与 daemon 容器内产出路径不一致。）
+    events_db = None
+    persona_yaml = tishen_home() / "personas" / f"{args.id}.yaml"
+    if persona_yaml.exists():
+        try:
+            log_volume = load_persona(persona_yaml).storage.log_volume
+            candidate = Path("/var/lib/docker/volumes") / log_volume / "_data" / "events" / "events.db"
+            if candidate.exists():
+                events_db = str(candidate)
+        except Exception:
+            events_db = None
+    if events_db is None:
+        events_db = str(tishen_home() / "events" / f"{args.id}.db")
     events = query_events(events_db, event_type=args.type, limit=args.limit)
     if _json_mode(args):
         print(json.dumps(events, ensure_ascii=False))
