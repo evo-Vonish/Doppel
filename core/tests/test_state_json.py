@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 
 import pytest
 
@@ -245,10 +246,13 @@ def test_start_human_mode_unchanged(home, capsys, monkeypatch):
     assert "http://127.0.0.1:49153/?embed=1" in out
 
 
-def test_events_without_observ_module(home, capsys):
+def test_events_without_observ_module(home, capsys, monkeypatch):
     """events 子命令：观测模块（M3）未安装时中文友好提示，非 traceback。"""
     with StateDB() as db:
         _add_record(db)
+    # m3 合并后 observ 包常驻仓库：sys.modules 置 None 模拟"模块未安装"环境，
+    # 验证 cli 的 ImportError 降级路径仍是中文人话而非 traceback（主代理合并后修正本用例）。
+    monkeypatch.setitem(sys.modules, "tishen.observ.query", None)
     rc = cli.main(["events", "p_test01"])
     captured = capsys.readouterr()
     assert rc == 1
