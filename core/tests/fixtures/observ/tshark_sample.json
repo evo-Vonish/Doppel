@@ -1,0 +1,107 @@
+[
+  {
+    "_index": "packets-fixture",
+    "_source": {
+      "layers": {
+        "frame": {"frame.number": "1", "frame.time_epoch": "1753600000.000000000"},
+        "ip": {"ip.src": "10.0.0.2", "ip.dst": "8.8.8.8"},
+        "udp": {"udp.srcport": "53124", "udp.dstport": "53"},
+        "dns": {"dns.qry.name": "doubleclick.net", "dns.qry.type": "1", "dns.flags.response": "0"}
+      }
+    }
+  },
+  {
+    "_index": "packets-fixture",
+    "_source": {
+      "layers": {
+        "frame": {"frame.number": "2", "frame.time_epoch": "1753600000.120000000"},
+        "ip": {"ip.src": "10.0.0.2", "ip.dst": "93.184.216.34"},
+        "tcp": {"tcp.srcport": "51234", "tcp.dstport": "443", "tcp.stream": "0"},
+        "tls": {
+          "tls.handshake.type": "1",
+          "tls.handshake.random": "1111111111111111111111111111111111111111111111111111111111111111",
+          "tls.handshake.extensions_server_name": "example.com"
+        }
+      }
+    }
+  },
+  {
+    "_index": "packets-fixture",
+    "_source": {
+      "layers": {
+        "frame": {"frame.number": "3", "frame.time_epoch": "1753600000.250000000"},
+        "ip": {"ip.src": "10.0.0.2", "ip.dst": "93.184.216.34"},
+        "tcp": {"tcp.srcport": "51234", "tcp.dstport": "443", "tcp.stream": "0"},
+        "http": {
+          "http.request.method": "GET",
+          "http.request.uri": "/index.html",
+          "http.request.full_uri": "http://example.com/index.html",
+          "http.host": "example.com",
+          "http.user_agent": "Mozilla/5.0 (X11; Linux x86_64) Chrome/138.0.7204.0"
+        }
+      }
+    }
+  },
+  {
+    "_index": "packets-fixture",
+    "_source": {
+      "layers": {
+        "frame": {"frame.number": "4", "frame.time_epoch": "1753600000.410000000"},
+        "ip": {"ip.src": "93.184.216.34", "ip.dst": "10.0.0.2"},
+        "tcp": {"tcp.srcport": "443", "tcp.dstport": "51234", "tcp.stream": "0"},
+        "http": {
+          "http.response.code": "200",
+          "http.response.phrase": "OK",
+          "http.content_type": "text/html; charset=UTF-8",
+          "http.host": "example.com",
+          "http.request_in": "3",
+          "http.set_cookie": ["sessionid=abc123; Path=/; HttpOnly"]
+        }
+      }
+    }
+  },
+  {
+    "_index": "packets-fixture",
+    "_source": {
+      "layers": {
+        "frame": {"frame.number": "5", "frame.time_epoch": "1753600000.520000000"},
+        "ip": {"ip.src": "93.184.216.34", "ip.dst": "10.0.0.2"},
+        "tcp": {"tcp.srcport": "443", "tcp.dstport": "51234", "tcp.stream": "0"},
+        "http": {
+          "http.response.code": "302",
+          "http.response.phrase": "Found",
+          "http.location": "http://example.com/landing",
+          "http.host": "example.com"
+        }
+      }
+    }
+  },
+  {
+    "_index": "packets-fixture",
+    "_source": {
+      "layers": {
+        "frame": {"frame.number": "6", "frame.time_epoch": "1753600000.700000000"},
+        "ip": {"ip.src": "10.0.0.2", "ip.dst": "142.250.72.14"},
+        "tcp": {"tcp.srcport": "51240", "tcp.dstport": "443", "tcp.stream": "1"},
+        "http2": {
+          "http2.headers.method": "POST",
+          "http2.headers.scheme": "https",
+          "http2.headers.authority": "google-analytics.com",
+          "http2.headers.path": "/collect",
+          "http2.headers.set_cookie": "ga=GA1.2.3; Path=/"
+        }
+      }
+    }
+  },
+  {
+    "_index": "packets-fixture",
+    "_source": {
+      "layers": {
+        "frame": {"frame.number": "7", "frame.time_epoch": "1753600000.880000000"},
+        "ip": {"ip.src": "142.250.72.14", "ip.dst": "10.0.0.2"},
+        "tcp": {"tcp.srcport": "443", "tcp.dstport": "51240", "tcp.stream": "1"},
+        "http2": {"http2.headers.status": "200"}
+      }
+    }
+  }
+]
