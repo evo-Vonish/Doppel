@@ -1,0 +1,14 @@
+{
+  "name": "tishen-shell",
+  "version": "0.2.0",
+  "private": true,
+  "description": "替身（Tishen）M2 Electron 外壳最小骨架（原生 DOM 无框架，SPEC-M2M3 §1.4）",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "lint": "node --check src/main.js && node --check src/preload.js && node --check src/onboarding.js && node --check src/renderer/app.js"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0"
+  }
+}

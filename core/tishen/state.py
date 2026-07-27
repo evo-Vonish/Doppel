@@ -1,6 +1,10 @@
-"""本地状态库（SPEC §7.3）：SQLite，$TISHEN_HOME/state.db。
+"""本地状态库（SPEC §7.3 + M2 连接信息列，SPEC-M2M3 §1.3）：SQLite，$TISHEN_HOME/state.db。
 
-表：personas(id, name, region, state, chrome_baseline, created_at, updated_at)
+表：personas(id, name, region, state, chrome_baseline, created_at, updated_at,
+             host_port, neko_password)
+M2 新增 host_port（neko 流服务在宿主 loopback 的映射端口）与 neko_password
+（创建时随机生成的登录口令，供外壳拼接 embed_url；不落 persona.yaml）。
+迁移安全：旧库缺列时 ALTER TABLE 补列（try/except 幂等），不清库不丢数据。
 TISHEN_HOME 默认 ~/.tishen。生命周期状态机（M1 方案 §7）：
 creating → active ⇄ suspended → (reset → creating) → destroyed
 """
@@ -46,10 +50,20 @@ class StateDB:
                 state           TEXT NOT NULL,
                 chrome_baseline TEXT NOT NULL,
                 created_at      TEXT NOT NULL,
-                updated_at      TEXT NOT NULL
+                updated_at      TEXT NOT NULL,
+                host_port       INTEGER,
+                neko_password   TEXT
             )
             """
         )
+        # M2 迁移：旧库（M1 建的）缺 host_port/neko_password 两列，逐列补齐；
+        # 列已存在时 sqlite 抛 OperationalError，吞掉即幂等（不丢既有数据）。
+        for ddl in ("ALTER TABLE personas ADD COLUMN host_port INTEGER",
+                    "ALTER TABLE personas ADD COLUMN neko_password TEXT"):
+            try:
+                self._conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
         self._conn.commit()
 
     def close(self) -> None:
@@ -96,4 +110,26 @@ class StateDB:
             "UPDATE personas SET state = ?, updated_at = ? WHERE id = ?",
             (state, _now(), persona_id),
         )
+        self._conn.commit()
+
+    def update_connection(self, persona_id: str, host_port: int | None = None,
+                          neko_password: str | None = None) -> None:
+        """记录/更新 M2 连接信息（neko 宿主端口与口令），刷新 updated_at。
+
+        传 None 的字段保持原值（start 既有容器时只刷新端口，不覆盖口令）。
+        """
+        if host_port is None and neko_password is None:
+            return
+        sets, params = [], []
+        if host_port is not None:
+            sets.append("host_port = ?")
+            params.append(host_port)
+        if neko_password is not None:
+            sets.append("neko_password = ?")
+            params.append(neko_password)
+        sets.append("updated_at = ?")
+        params.append(_now())
+        params.append(persona_id)
+        self._conn.execute(
+            f"UPDATE personas SET {', '.join(sets)} WHERE id = ?", params)
         self._conn.commit()

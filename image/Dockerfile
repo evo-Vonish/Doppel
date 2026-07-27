@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
-# 替身（Tishen）M1 平台镜像 —— 四阶段多阶段构建
-# 分层职责：runtime（显示/音频/编码栈）→ i18n（字体/输入法）→ chrome（浏览器）→ tishen（烘焙入口+观测）
+# 替身（Tishen）平台镜像 —— 多阶段构建（M1 四层 + M2 流层）
+# 分层职责：runtime（显示/音频/编码栈）→ i18n（字体/输入法）→ chrome（浏览器）
+#           → tishen（烘焙入口+观测）→ stream（M2：neko v2 推流 server，SPEC-M2M3 §1.1）
 # 纪律：镜像是通用「替身平台」，不写死任何 persona 具体值；persona.yaml 是容器启动参数（见 M1 方案 §2 决策 2）。
 
 ARG UBUNTU=ubuntu:24.04
@@ -89,12 +90,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 FROM chrome AS tishen
 
 # 烘焙器运行时依赖：python3 + PyYAML（契约白名单）；
-# 观测脚手架：tcpdump（环形抓包）、age（日志/keylog 加密落盘工具链，R11）
+# 观测脚手架：tcpdump（环形抓包）、age（日志/keylog 加密落盘工具链，R11）；
+# tshark：M3 观测链路（pcap → TLS 解密 → 事件流）需要，M2 由 Coder C 代装（SPEC-M2M3 §1.1）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-yaml \
     tcpdump \
     age \
+    tshark \
     && rm -rf /var/lib/apt/lists/*
 
 # 拷贝镜像层自带资产：入口脚本、配置模板、观测守护
@@ -123,3 +126,37 @@ LABEL org.opencontainers.image.title="tishen-persona-image" \
     tishen.chrome.version="${CHROME_VERSION}"
 
 ENTRYPOINT ["/opt/tishen/entrypoint/persona-bake"]
+
+# ── L5 流层：neko v2 server 二进制（M2 画面回显，SPEC-M2M3 §1.1）────────────
+# 独立 stage 便于单独重建（M2 方案 §二集成要点 1：合入 neko 是「补一块二进制」，不换底座）。
+# neko 只负责抓屏推流与输入回注；Chrome 生命周期仍归 persona-bake 编排。
+FROM tishen AS stream
+
+# 锁定 v2 稳定系具体 tag（v3 有 issue #598 高延迟 bug，禁入）；
+# 构建前必须核实 release 页面上的真实版本号与 tar 包 SHA256 并填入下方 ARG——切片期纪律：
+# NEKO_SHA256 为占位，未填则构建打印警告但不中断（便于离线/冒烟构建）；
+# 进入真实验收前必须填实，否则推流二进制来源不可信（原则：供应链可校验）。
+ARG NEKO_VERSION=2.8.0
+ARG NEKO_SHA256=""
+
+# 从 neko 官方 GitHub release 拉取 linux amd64 server 二进制 tar 包；
+# SHA256 校验逻辑就位：填了 NEKO_SHA256 则强校验（不符即构建失败），未填则警告放行（切片期）。
+RUN curl -fSL -o /tmp/neko.tar.gz \
+    "https://github.com/m1k1o/neko/releases/download/v${NEKO_VERSION}/neko_${NEKO_VERSION}_linux_amd64.tar.gz" \
+    && if [ -n "${NEKO_SHA256}" ]; then \
+        echo "${NEKO_SHA256}  /tmp/neko.tar.gz" | sha256sum -c -; \
+    else \
+        echo "警告：NEKO_SHA256 未填，跳过 neko 二进制完整性校验（仅限切片期冒烟构建）" >&2; \
+    fi \
+    && mkdir -p /opt/neko \
+    && tar -xzf /tmp/neko.tar.gz -C /opt/neko \
+    && chmod +x /opt/neko/neko \
+    && rm -f /tmp/neko.tar.gz
+
+# neko 运行时默认（M2 方案 §二.3：本地优先，零外联）：
+# 容器内 HTTP/WebSocket 监听 8080；WebRTC 走 host candidate（本机 loopback），不配 STUN/TURN。
+# 口令纪律：NEKO_PASSWORD 不入镜像，运行时经环境变量注入（docker_ctl 创建替身时生成随机口令）。
+ENV NEKO_BIND=:8080 \
+    NEKO_ICELITE=1 \
+    NEKO_NAT1TO1=127.0.0.1 \
+    NEKO_EPR=59000-59100

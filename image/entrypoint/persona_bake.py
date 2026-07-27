@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""替身容器 persona 烘焙器（SPEC §6 十步契约）。
+"""替身容器 persona 烘焙器（SPEC §6 十步契约 + M2 流层编排，SPEC-M2M3 §1.2）。
 
-容器启动时按序执行十步，把 /persona/persona.yaml 声明的环境真实烘焙进运行时：
-门禁复验 → 时区 → locale → 字体激活 → 显示 → 输入法 → 观测 → Chrome 启动行 → 禁项自检 → SIGTERM 收尾。
+容器启动时按序执行，把 /persona/persona.yaml 声明的环境真实烘焙进运行时：
+门禁复验 → 时区 → locale → 字体激活 → 显示 → 输入法 → 观测 → 7.5 neko 流服务 → Chrome 启动行 → 禁项自检 → SIGTERM 收尾。
+
+M2 进程启动顺序固定（M2 方案 §二.2，persona-bake 统一收口编排）：
+    Xorg(dummy) → xrandr 按 persona 设分辨率 → PulseAudio → fcitx5 → neko server → Chrome
+neko 只负责抓屏推流与输入回注，不接管 Chrome 生命周期（避免两套进程管理权打架）。
 
 输入：/persona/persona.yaml（只读挂载）
-环境变量：GPU_VENDOR（mesa|nvidia，默认 mesa）、MONITOR_PCAP（0|1，默认 1）
-参数：--dry-run 冒烟模式——跑完第 1–7 步后打印将要执行的 Chrome 启动行并退出 0
+环境变量：GPU_VENDOR（mesa|nvidia，默认 mesa）、MONITOR_PCAP（0|1，默认 1）、
+          NEKO_PASSWORD（neko 流服务登录口令，缺失则拒绝启动——口令只经环境变量注入，不落盘）
+参数：--dry-run 冒烟模式——跑完第 1–7.5 步后打印将要执行的 neko/Chrome 启动计划并退出 0
 """
 
 import argparse
@@ -33,6 +38,7 @@ CHROME_VERSION_FILE = "/etc/tishen/chrome_version"  # 镜像构建期落档的�
 FONTCONFIG_TEMPLATE = "/opt/tishen/config/fontconfig-pack.conf.template"
 OBSERVABILITY_DAEMON = "/opt/tishen/scripts/observability-daemon.sh"
 XORG_CONFIG = "/opt/tishen/config/xorg-dummy.conf"
+NEKO_BIN = "/opt/neko/neko"                     # L5 流层安装的 neko v2 server 二进制
 DISPLAY_ID = ":0"                               # 虚拟显示器编号
 X_READY_TIMEOUT = 15                            # 等待 X 就绪秒数
 
@@ -314,6 +320,34 @@ def step7_observability(monitor_pcap: str) -> None:
         log("MONITOR_PCAP=0：跳过抓包守护（keylog 仍随 Chrome 启动注入）")
 
 
+# ── 第 7.5 步：neko 流服务（M2，SPEC-M2M3 §1.2）─────────────────────────────
+# 在 fcitx5 之后、Chrome 之前受监督启动 neko server：neko 抓虚拟屏推 WebRTC 流并回注输入，
+# 不接管 Chrome 生命周期（M2 方案 §二.2）。
+# 口令纪律：NEKO_PASSWORD 只经环境变量注入（docker run -e，创建替身时随机生成），
+# 缺失则拒绝启动（无人值守的流服务不允许以默认/空口令裸奔）。
+def build_neko_argv() -> list[str]:
+    """组装 neko 启动行；NEKO_BIND/ICELITE/NAT1TO1/EPR 走镜像 ENV 默认值。"""
+    return [NEKO_BIN, "serve"]
+
+
+def step7_5_neko() -> None:
+    neko_password = os.environ.get("NEKO_PASSWORD", "")
+    argv = build_neko_argv()
+    line = " ".join(shlex.quote(a) for a in argv)
+    if _DRY_RUN:
+        # dry-run 只打印计划不真启动；口令永不明文上屏（含计划打印）
+        pwd_note = "已注入（不明文打印）" if neko_password else "未设置（真实启动将拒绝）"
+        log(f"[dry-run] 将后台启动：{line}（neko 流服务；NEKO_PASSWORD {pwd_note}；"
+            f"NEKO_BIND={os.environ.get('NEKO_BIND', ':8080')}）")
+        return
+    if not neko_password:
+        fail("NEKO_PASSWORD 环境变量缺失：neko 流服务拒绝以无口令状态启动。"
+             "请在 docker run 时经 -e NEKO_PASSWORD=... 注入（由 tishen CLI 创建替身时随机生成）", 2)
+    if not Path(NEKO_BIN).is_file():
+        fail(f"neko server 二进制不存在：{NEKO_BIN}（镜像未含 L5 流层，请用 stream 阶段的镜像构建）", 2)
+    spawn("neko", argv, "neko 流服务（WebRTC 推流/输入回注）")
+
+
 # ── 第 8 步：组装 Chrome 启动行 ───────────────────────────────────────────
 def build_chrome_argv(persona, gpu_vendor: str) -> list[str]:
     argv = [
@@ -360,9 +394,10 @@ def _terminate(name: str, timeout: int = 10) -> None:
 
 
 def _shutdown(signum, _frame) -> None:
-    """先停 Chrome 再停 fcitx5/观测守护（含虚拟屏），退出码 0。"""
+    """SIGTERM 监督收尾顺序（SPEC-M2M3 §1.2）：Chrome → neko → fcitx5 → 观测守护（含虚拟屏），退出码 0。"""
     log(f"收到信号 {signum}，按序收尾")
     _terminate("chrome")
+    _terminate("neko")
     _terminate("fcitx5")
     _terminate("observability")
     _terminate("xorg")
@@ -373,7 +408,7 @@ def main() -> None:
     global _DRY_RUN
     parser = argparse.ArgumentParser(description="替身容器 persona 烘焙器（SPEC §6）")
     parser.add_argument("--dry-run", action="store_true",
-                        help="冒烟模式：跑完第 1–7 步后打印将要执行的 Chrome 启动行并退出 0")
+                        help="冒烟模式：跑完第 1–7.5 步后打印将要执行的 neko/Chrome 启动计划并退出 0")
     args = parser.parse_args()
     _DRY_RUN = args.dry_run
 
@@ -384,7 +419,7 @@ def main() -> None:
     if monitor_pcap not in ("0", "1"):
         fail(f"MONITOR_PCAP={monitor_pcap} 非法（可选 0|1）", 2)
 
-    # 第 1–7 步：门禁 → 时区 → locale → 字体 → 显示 → 输入法 → 观测
+    # 第 1–7.5 步：门禁 → 时区 → locale → 字体 → 显示 → 输入法 → 观测 → neko 流服务
     persona = step1_gate()
     step2_timezone(persona)
     step3_locale(persona)
@@ -392,6 +427,7 @@ def main() -> None:
     step5_display(persona)
     step6_input_method()
     step7_observability(monitor_pcap)
+    step7_5_neko()
 
     # 第 8/9 步：组装启动行 + 禁项自检
     chrome_argv = build_chrome_argv(persona, gpu_vendor)
@@ -399,7 +435,7 @@ def main() -> None:
 
     launch_line = " ".join(shlex.quote(a) for a in chrome_argv)
     if _DRY_RUN:
-        log("dry-run 完成（第 1–7 步已执行/预演），将要执行的 Chrome 启动行：")
+        log("dry-run 完成（第 1–7.5 步已执行/预演），将要执行的 Chrome 启动行：")
         print(launch_line)
         sys.exit(0)
 
@@ -414,7 +450,8 @@ def main() -> None:
     except OSError as exc:
         fail(f"启动 Chrome 失败：{exc}")
     rc = _CHILDREN["chrome"].wait()
-    log(f"Chrome 退出（rc={rc}），按序收尾后台进程")
+    log(f"Chrome 退出（rc={rc}），按序收尾后台进程（neko → fcitx5 → 观测守护）")
+    _terminate("neko")
     _terminate("fcitx5")
     _terminate("observability")
     _terminate("xorg")

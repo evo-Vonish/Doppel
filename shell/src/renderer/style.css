@@ -1,0 +1,124 @@
+/* 替身（Tishen）M2 外壳样式（切片期最小集，原生 DOM 无框架） */
+
+body {
+  font-family: "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  margin: 0;
+  color: #222;
+  background: #f6f7f9;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  background: #2d3e50;
+  color: #fff;
+}
+
+header h1 {
+  font-size: 18px;
+  margin: 0;
+}
+
+main {
+  padding: 20px;
+}
+
+button {
+  margin: 4px 6px 4px 0;
+  padding: 6px 14px;
+  border: 1px solid #c8ccd2;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+
+button.primary {
+  background: #2d7ff9;
+  border-color: #2d7ff9;
+  color: #fff;
+}
+
+button.danger {
+  color: #c0392b;
+  border-color: #c0392b;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.toolbar {
+  margin-bottom: 12px;
+}
+
+#persona-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+}
+
+#persona-table th,
+#persona-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e4e7eb;
+}
+
+#onboarding {
+  max-width: 560px;
+  margin: 60px auto;
+  padding: 28px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+}
+
+.onboarding-step {
+  padding: 10px 0;
+  border-bottom: 1px dashed #e4e7eb;
+}
+
+.onboarding-step .step-hint {
+  margin: 4px 0 0 22px;
+  color: #68707a;
+  font-size: 13px;
+}
+
+.step-done .step-status { color: #27ae60; }
+.step-current .step-status { color: #2d7ff9; }
+.step-pending { color: #aab0b8; }
+
+.onboarding-error {
+  color: #c0392b;
+  background: #fdecea;
+  padding: 10px 12px;
+  border-radius: 4px;
+}
+
+.onboarding-done {
+  color: #27ae60;
+  font-weight: bold;
+}
+
+.echo-error {
+  color: #c0392b;
+}
+
+#expert-panel {
+  margin-top: 24px;
+  padding: 16px;
+  background: #fff;
+  border-radius: 8px;
+}
+
+#doctor-output {
+  background: #1d252d;
+  color: #d6dde4;
+  padding: 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 12px;
+}

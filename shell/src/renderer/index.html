@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<!-- 替身（Tishen）M2 外壳渲染页（SPEC-M2M3 §1.4）：
+     替身列表 + webview 回显区 + 首启引导容器 + 专家面板占位（M3 填数据）。
+     原生 DOM 无框架；页面无 Node 能力（contextIsolation 开、nodeIntegration 关）。 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+  <title>替身</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>替身</h1>
+    <div id="mode-switch">
+      <label for="mode-select">界面模式：</label>
+      <select id="mode-select">
+        <option value="default">默认</option>
+        <option value="expert">专家</option>
+      </select>
+    </div>
+  </header>
+
+  <!-- 首启五步引导容器（onboarding.js 渲染；每步一个主按钮） -->
+  <section id="onboarding" hidden></section>
+
+  <main id="main-view">
+    <!-- 替身列表页：名称/状态/操作（休眠·重置·销毁·打开窗口）+ 新建按钮 -->
+    <section id="persona-list-view">
+      <div class="toolbar">
+        <button id="btn-create" class="primary">新建替身</button>
+        <button id="btn-refresh">刷新</button>
+      </div>
+      <table id="persona-table">
+        <thead>
+          <tr><th>名称</th><th>状态</th><th>操作</th></tr>
+        </thead>
+        <tbody id="persona-tbody"></tbody>
+      </table>
+      <p id="list-empty" hidden>还没有替身，点「新建替身」创建一个吧。</p>
+    </section>
+
+    <!-- 回显区：<webview> 嵌 neko embed_url（?embed=1 免登录嵌入，M2 方案 §三） -->
+    <section id="echo-view" hidden>
+      <div class="toolbar">
+        <button id="btn-back">返回列表</button>
+        <span id="echo-title"></span>
+      </div>
+      <div id="echo-container"></div>
+    </section>
+
+    <!-- 专家模式面板容器：M2 只放占位，数据源 M3 接入（注释：M3 填数据） -->
+    <section id="expert-panel" hidden>
+      <h2>无所遁形面板（占位）</h2>
+      <p>此面板将在 M3 接入观测事件流后展示替身的网络行为明细。</p>
+      <div id="expert-doctor">
+        <button id="btn-doctor">运行自检（tishen doctor）</button>
+        <pre id="doctor-output" hidden></pre>
+      </div>
+    </section>
+  </main>
+
+  <script src="../onboarding.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

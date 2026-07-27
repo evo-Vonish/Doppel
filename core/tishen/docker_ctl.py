@@ -6,11 +6,15 @@
   由 CLI 层决定如何向用户报告；
 - docker run 组装严格对应 M1 方案 §6 的运行时基线：
   --shm-size=2g、--device /dev/dri、--cap-add NET_RAW/NET_ADMIN、
-  profile/log 卷挂载、persona.yaml 只读挂载、容器名 ts_<id>。
+  profile/log 卷挂载、persona.yaml 只读挂载、容器名 ts_<id>；
+- M2 流层追加（SPEC-M2M3 §1.3）：-p 127.0.0.1:0:8080（neko 只发布到宿主 loopback
+  的随机空闲端口）、-e NEKO_PASSWORD=<创建时生成的随机口令>；
+  start 后 docker port 解析宿主端口供外壳拼接 embed_url。
 """
 
 from __future__ import annotations
 
+import secrets
 import subprocess
 from pathlib import Path
 
@@ -22,6 +26,9 @@ SHM_SIZE_BYTES = 2 * 1024 ** 3
 
 # 镜像默认标签（M1 方案 §3 标签策略）；CLI 可用 TISHEN_IMAGE 覆盖
 DEFAULT_IMAGE_TAG = "tishen/platform:latest-stable"
+
+# neko 流服务容器内监听端口（与镜像 ENV NEKO_BIND=:8080 对应）
+NEKO_CONTAINER_PORT = 8080
 
 
 def container_name(persona_id: str) -> str:
@@ -36,12 +43,21 @@ def _run(args: list[str]) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout, proc.stderr
 
 
+def generate_neko_password() -> str:
+    """生成 neko 流服务登录口令（每替身创建时随机生成，M2 方案 §二.3）。
+
+    口令只经 -e 注入容器与记入状态库（供外壳拼接 embed_url），不落 persona.yaml。
+    """
+    return secrets.token_hex(16)
+
+
 def build_run_command(persona: Persona, image_tag: str,
-                      personas_dir: str | Path) -> list[str]:
-    """组装 docker run 命令（M1 方案 §6 基线，A4：固化进编排层）。"""
+                      personas_dir: str | Path,
+                      neko_password: str | None = None) -> list[str]:
+    """组装 docker run 命令（M1 方案 §6 基线 + M2 流层追加，A4：固化进编排层）。"""
     pid = persona.meta.id
     yaml_path = Path(personas_dir).expanduser().resolve() / f"{pid}.yaml"
-    return [
+    args = [
         "docker", "run", "-d",
         "--name", container_name(pid),
         f"--shm-size={SHM_SIZE}",
@@ -51,14 +67,43 @@ def build_run_command(persona: Persona, image_tag: str,
         "-v", f"{persona.storage.profile_volume}:/persona/profile",
         "-v", f"{persona.storage.log_volume}:/persona/logs",
         "-v", f"{yaml_path}:/persona/persona.yaml:ro",     # persona 只读挂载
-        image_tag,
     ]
+    if neko_password is not None:
+        # M2 流层：neko 只发布到宿主 loopback 的随机空闲端口（0 = docker 分配），
+        # 口令经环境变量注入容器（persona-bake 第 7.5 步读取，缺失会拒绝启动）
+        args += [
+            "-p", f"127.0.0.1:0:{NEKO_CONTAINER_PORT}",
+            "-e", f"NEKO_PASSWORD={neko_password}",
+        ]
+    args.append(image_tag)
+    return args
 
 
 def run_persona_container(persona: Persona, image_tag: str,
-                          personas_dir: str | Path) -> tuple[int, str, str]:
+                          personas_dir: str | Path,
+                          neko_password: str | None = None) -> tuple[int, str, str]:
     """docker run 启动替身容器。"""
-    return _run(build_run_command(persona, image_tag, personas_dir))
+    return _run(build_run_command(persona, image_tag, personas_dir, neko_password))
+
+
+def container_host_port(persona_id: str) -> int | None:
+    """解析 neko 端口在宿主的映射（docker port ts_<id> 8080）；读不到返回 None。
+
+    输出形如「127.0.0.1:49153」（可能多行多绑定，取第一个解析成功的端口）。
+    """
+    rc, out, _ = _run(["docker", "port", container_name(persona_id),
+                       str(NEKO_CONTAINER_PORT)])
+    if rc != 0:
+        return None
+    for line in out.splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        try:
+            return int(line.rsplit(":", 1)[1])
+        except ValueError:
+            continue
+    return None
 
 
 def start_container(persona_id: str) -> tuple[int, str, str]:
@@ -126,6 +171,17 @@ def volume_exists(name: str) -> bool:
     """卷是否存在。"""
     rc, _, _ = _run(["docker", "volume", "inspect", name])
     return rc == 0
+
+
+def image_exists(tag: str) -> bool:
+    """镜像是否已存在于本地（M2 外壳首启引导用）。"""
+    rc, _, _ = _run(["docker", "image", "inspect", tag])
+    return rc == 0
+
+
+def pull_image(tag: str) -> tuple[int, str, str]:
+    """拉取替身平台镜像（M2 首启引导第 3 步；网络动作由使用者在真实环境触发）。"""
+    return _run(["docker", "pull", tag])
 
 
 def docker_available() -> tuple[bool, str]:
