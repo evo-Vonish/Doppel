@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# 替身镜像入口薄壳（SPEC §6 末尾契约）：
+# 只做防御性设置，立即把控制权交给 Python 烘焙器本体。
+set -euo pipefail
+exec python3 /opt/tishen/entrypoint/persona_bake.py "$@"

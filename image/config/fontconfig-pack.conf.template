@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<!--
+  替身字体激活模板（SPEC §1：image/config/fontconfig-pack.conf.template）
+
+  渲染方式：persona_bake.py 第 4 步按 persona.yaml 的 fonts.pack / fonts.extras
+  做占位符替换，结果写入 ~/.config/fontconfig/fonts.conf 后执行 fc-cache -f。
+
+  占位符：
+    @FONT_PACK@  字体包激活块（按 fonts.pack 注入对应包的 alias XML 块）
+    @EXTRAS@     附加激活块（按 fonts.extras 逐项注入；本期可选元素仅 cjk）
+
+  内置字体包（SPEC §3.3 V7，os.family=linux 仅这两包；超集已在镜像层全量预装，
+  此处「激活子集而非堆装」——装了什么字体本身是可探测面，坑位 7）：
+
+    linux-noto-standard
+        激活 Noto 系：Noto Sans / Noto Serif / Noto Sans Mono 为西文主族，
+        Noto Sans/Serif CJK SC 与文泉驿微米黑（WenQuanYi Micro Hei）作 CJK 兜底，
+        DejaVu 三族殿后。面向中文/东亚属地 persona 的默认选择。
+
+    linux-liberation-dejavu
+        激活 Liberation 三族（Sans/Serif/Mono，度量兼容 Arial/Times New Roman/Courier New），
+        DejaVu 三族作兜底；不主动注入 CJK 族。面向欧美属地 persona 的默认选择。
+-->
+<fontconfig>
+
+  <!-- ── 字体包激活块（@FONT_PACK@）── -->
+@FONT_PACK@
+
+  <!-- ── 附加激活块（@EXTRAS@）：cjk 时追加 CJK 兜底族，保证中文页面不缺字形 ── -->
+@EXTRAS@
+
+</fontconfig>
