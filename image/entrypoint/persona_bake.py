@@ -126,8 +126,10 @@ def step1_gate():
     if not current_stable:
         fail(f"Chrome 版本落档为空：{CHROME_VERSION_FILE}", 2)
 
-    # 校验期 detected_ip_region=None：跳过 V1 属地锚（创建时已实测锁定，SPEC §3.1）
-    ctx = LintContext(current_stable_chrome=current_stable, detected_ip_region=None)
+    # 容器门禁必须以 persona 声明的创建时属地为锚——None 会把 V1 属地族检查整个跳过，
+    # 让"属地 CN 却配纽约时区"这类矛盾替身直接漏进运行时（主代理集成测试发现并修复）。
+    ctx = LintContext(current_stable_chrome=current_stable,
+                      detected_ip_region=persona.region.detected_ip_region)
     lint_errors = lint_persona(persona, ctx)
     if lint_errors:
         for e in lint_errors:
