@@ -1,0 +1,61 @@
+# 完全合法的中国属地 persona（SPEC §1 fixtures）
+# 结构校验与 V1–V10 全部通过（门禁上下文：current_stable_chrome=138.0.7204.50，属地锚 CN）
+version: 1
+meta:
+  id: p_20260727_a7f3
+  name: 默认替身
+  created_at: "2026-07-27T22:40:00+08:00"
+
+region:
+  follow_ip: true
+  detected_ip_region: CN
+  locale: zh-CN
+  timezone: Asia/Shanghai
+  languages: [zh-CN, zh, en-US, en]
+
+os:
+  family: linux
+  distro: ubuntu-24.04
+  chrome_channel: stable
+
+hardware:
+  gpu:
+    mode: host_passthrough
+    renderer_string_source: real
+  hardwareConcurrency: 8
+  deviceMemory: 8
+
+display:
+  width: 1920
+  height: 1080
+  dpr: 1.0
+
+fonts:
+  pack: linux-noto-standard
+  extras: [cjk]
+
+webrtc:
+  ip_handling_policy: disable_non_proxied_udp
+
+farbling:
+  seed: 9f2c4e8a1b3d5f7046a8c2e1d3b5f709
+  scope: [canvas_readback, webgl_readback, audio]
+
+evolution:
+  strategy: anchor_chrome_version
+  baseline_chrome: 138.0.7204.0
+  drift_policy: follow_stable_diff
+
+proxy: null
+
+storage:
+  profile_volume: ts_p_20260727_a7f3_profile
+  log_volume: ts_p_20260727_a7f3_logs
+  retain_days: 30
+
+monitoring:
+  keylog: true
+  log_encryption: age
+
+lifecycle:
+  state: active
