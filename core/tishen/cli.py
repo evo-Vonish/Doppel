@@ -1,16 +1,23 @@
-"""tishen 命令行（SPEC §7，argparse）。
+"""tishen 命令行（SPEC §7 + M2 JSON 输出与事件查询，SPEC-M2M3 §1.3，argparse）。
 
 子命令：
     tishen create [--region auto|CN|HK|TW|JP|US|GB|DE] [--name 名] [--seed N]
     tishen start|stop|suspend|resume|reset|destroy <id>
-    tishen list
+    tishen list [--json]
+    tishen events <id> [--type T] [--limit N] [--json]   # M2 新增；数据由 M3 观测模块提供
     tishen lint <persona.yaml>
-    tishen doctor [<id>]
+    tishen doctor [<id>] [--json]
+    tishen pull [--json]                                 # M2 新增：拉取平台镜像（幂等）
+
+M2 全局 --json（可放子命令前或后）：list --json 输出替身数组；
+start <id> --json 输出 {"id","state","host_port","embed_url","password"} 供外壳消费；
+doctor/pull/events 亦支持 --json（外壳契约：一切 docker 操作经 CLI --json）。
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -80,12 +87,33 @@ def _report_docker_result(action: str, rc: int, out: str, err: str) -> bool:
     return False
 
 
+def _embed_url(host_port: int | None, password: str | None) -> str | None:
+    """拼接外壳 webview 嵌入地址（M2 方案 §二.3：?embed=1 免登录嵌入）。
+
+    端口或口令缺失（如 M1 遗留替身）时返回 None——不编造不可用的 URL。
+    """
+    if host_port is None or not password:
+        return None
+    return f"http://127.0.0.1:{host_port}/?embed=1&usr=admin&pwd={password}"
+
+
+def _json_mode(args) -> bool:
+    """是否 --json 输出模式（全局开关，子命令经 parents 继承）。"""
+    return bool(getattr(args, "json", False))
+
+
 # ---------------------------------------------------------------------------
 # create（§7.1）
 # ---------------------------------------------------------------------------
 
 def cmd_create(args) -> int:
     name = args.name or "默认替身"
+    json_mode = _json_mode(args)
+
+    def info(msg: str) -> None:
+        # --json 模式人类可读信息走 stderr，stdout 只留最终 JSON（外壳按契约解析）
+        print(msg, file=sys.stderr if json_mode else sys.stdout)
+
     try:
         persona = create_persona(
             name=name,
@@ -101,9 +129,9 @@ def cmd_create(args) -> int:
     # 落盘 persona.yaml
     yaml_path = _personas_dir() / f"{persona.meta.id}.yaml"
     dump_persona(persona, yaml_path)
-    print(f"已生成 persona：{yaml_path}")
+    info(f"已生成 persona：{yaml_path}")
     if persona.meta.note:
-        print(f"注意：{persona.meta.note}")
+        info(f"注意：{persona.meta.note}")
 
     # 创建两个卷（docker 不可用时给出警告但不阻断登记，使用者可在真实环境补建）
     volumes_ok = True
@@ -119,7 +147,7 @@ def cmd_create(args) -> int:
             print(f"警告：卷 {vol} 创建失败：{(err or '').strip()}", file=sys.stderr)
             volumes_ok = False
     if volumes_ok:
-        print(f"已创建卷：{persona.storage.profile_volume}、{persona.storage.log_volume}")
+        info(f"已创建卷：{persona.storage.profile_volume}、{persona.storage.log_volume}")
 
     # 状态库登记 creating
     with StateDB() as db:
@@ -127,8 +155,14 @@ def cmd_create(args) -> int:
                region=persona.region.detected_ip_region,
                state="creating",
                chrome_baseline=persona.evolution.baseline_chrome)
-    print(f"替身 {persona.meta.id}（{persona.meta.name}）已登记，状态 creating。")
-    print(f"下一步：tishen start {persona.meta.id}")
+    if json_mode:
+        # M2：外壳创建替身后需拿 id 走后续 start --json，结构化输出（属 --json 契约的合理扩展）
+        print(json.dumps({"id": persona.meta.id, "name": persona.meta.name,
+                          "region": persona.region.detected_ip_region,
+                          "state": "creating"}, ensure_ascii=False))
+        return 0
+    info(f"替身 {persona.meta.id}（{persona.meta.name}）已登记，状态 creating。")
+    info(f"下一步：tishen start {persona.meta.id}")
     return 0
 
 
@@ -137,6 +171,12 @@ def cmd_create(args) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_start(args) -> int:
+    # --json 模式下人类可读信息一律走 stderr，stdout 只留最终 JSON（外壳按行解析契约）
+    json_mode = _json_mode(args)
+
+    def info(msg: str) -> None:
+        print(msg, file=sys.stderr if json_mode else sys.stdout)
+
     with StateDB() as db:
         rec = _get_record_or_exit(db, args.id)
         if rec["state"] == "destroyed":
@@ -148,15 +188,44 @@ def cmd_start(args) -> int:
         except FileNotFoundError:
             print("错误：本机未找到 docker，无法启动替身容器。", file=sys.stderr)
             return 1
+        new_password = None
         if exists:
             rc, out, err = docker_ctl.start_container(args.id)
         else:
+            # M2：创建容器时生成随机 neko 口令，经 -e 注入（persona-bake 第 7.5 步强制校验）
+            new_password = docker_ctl.generate_neko_password()
             rc, out, err = docker_ctl.run_persona_container(
-                persona, _image_tag(), _personas_dir())
-        if not _report_docker_result(f"启动替身 {args.id}", rc, out, err):
+                persona, _image_tag(), _personas_dir(), new_password)
+        if rc != 0:
+            print(f"启动替身 {args.id}：失败（退出码 {rc}）。", file=sys.stderr)
+            detail = (err or out).strip()
+            if detail:
+                print(f"docker 输出：{detail}", file=sys.stderr)
             return 1
         db.update_state(args.id, "active")
-        print(f"替身 {args.id} 已上线（状态 active）。")
+
+        # M2 连接信息：docker port 解析宿主 loopback 映射端口；口令记入状态库
+        host_port = docker_ctl.container_host_port(args.id)
+        db.update_connection(args.id, host_port=host_port,
+                             neko_password=new_password)
+        password = new_password if new_password is not None \
+            else db.get(args.id).get("neko_password")
+        embed_url = _embed_url(host_port, password)
+
+        if json_mode:
+            # 输出契约（SPEC-M2M3 §1.3）：{"id","state","host_port","embed_url","password"}
+            payload = {"id": args.id, "state": "active", "host_port": host_port,
+                       "embed_url": embed_url, "password": password}
+            print(json.dumps(payload, ensure_ascii=False))
+            return 0
+
+        info(f"启动替身 {args.id}：成功。")
+        info(f"替身 {args.id} 已上线（状态 active）。")
+        if embed_url is not None:
+            info(f"连接信息：neko 流服务 http://127.0.0.1:{host_port}（仅本机回环）")
+            info(f"嵌入地址：{embed_url}")
+        else:
+            info("提示：未获取到 neko 连接信息（镜像可能不含 L5 流层，或该替身是 M1 遗留无口令记录）。")
         return 0
 
 
@@ -275,6 +344,10 @@ def cmd_destroy(args) -> int:
 def cmd_list(args) -> int:
     with StateDB() as db:
         rows = db.list_all(include_destroyed=args.all)
+    if _json_mode(args):
+        # M2 契约（SPEC-M2M3 §1.3）：输出替身数组（含 M2 连接信息列），供外壳消费
+        print(json.dumps(rows, ensure_ascii=False))
+        return 0
     if not rows:
         print("暂无替身。用 `tishen create` 创建第一个替身。")
         return 0
@@ -284,6 +357,40 @@ def cmd_list(args) -> int:
     for r in rows:
         print(f"{r['id']:<22} {r['name']:<12} {r['region']:<5} {r['state']:<10} "
               f"{r['chrome_baseline']:<16} {r['updated_at']}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# events（M2 新增，SPEC-M2M3 §1.3）：查询替身事件流（数据由 M3 观测模块落库）
+# ---------------------------------------------------------------------------
+
+def cmd_events(args) -> int:
+    """tishen events <id> [--type T] [--limit N] [--json]。
+
+    观测模块（tishen.observ）由 M3 提供（Coder D）；未安装时给出中文友好提示，
+    不以 traceback 上屏（原则：观测缺失不阻塞主链路）。
+    """
+    try:
+        from tishen.observ.query import query_events
+    except ImportError:
+        print("错误：观测模块未安装（M3）。事件查询由 M3 观测链路（tishen.observ）提供；"
+              "该模块就绪后本子命令自动可用，替身本体运行不受影响。", file=sys.stderr)
+        return 1
+    with StateDB() as db:
+        _get_record_or_exit(db, args.id)
+    # 事件库路径约定：$TISHEN_HOME/events/<id>.db（由 M3 daemon 产出/同步，见 SPEC-M2M3 §2.1 store.py）
+    events_db = str(tishen_home() / "events" / f"{args.id}.db")
+    events = query_events(events_db, event_type=args.type, limit=args.limit)
+    if _json_mode(args):
+        print(json.dumps(events, ensure_ascii=False))
+        return 0
+    if not events:
+        print(f"替身 {args.id} 暂无事件记录。")
+        return 0
+    print(f"替身 {args.id} 最近 {len(events)} 条事件：")
+    for e in events:
+        # 事件字段以 M3 契约为准（Coder D 实现），这里逐条 JSON 打印避免对字段假设
+        print("  " + json.dumps(e, ensure_ascii=False))
     return 0
 
 
@@ -333,24 +440,39 @@ def cmd_lint(args) -> int:
 # ---------------------------------------------------------------------------
 
 class _Doctor:
-    """逐项 [OK]/[FAIL] 输出，FAIL 附修复建议；failed 计数供退出码使用。"""
+    """逐项 [OK]/[FAIL] 输出，FAIL 附修复建议；failed 计数供退出码使用。
 
-    def __init__(self) -> None:
+    M2：检查项同步记入 items，--json 模式输出结构化结果供外壳首启引导消费
+    （外壳契约：一切 docker 操作经 CLI --json，严禁直接调 docker）。
+    """
+
+    def __init__(self, json_mode: bool = False) -> None:
         self.failed = 0
+        self.items: list[dict] = []
+        self._json_mode = json_mode
 
     def check(self, ok: bool, item: str, detail: str = "", fix: str = "") -> None:
+        self.items.append({"item": item, "ok": ok, "detail": detail, "fix": fix})
+        if not ok:
+            self.failed += 1
+        if self._json_mode:
+            return  # JSON 模式只收集，最终统一输出
         if ok:
             print(f"[OK]   {item}" + (f"（{detail}）" if detail else ""))
         else:
-            self.failed += 1
             print(f"[FAIL] {item}" + (f"（{detail}）" if detail else ""))
             if fix:
                 print(f"       修复建议：{fix}")
 
 
+def _doctor_header(doc: _Doctor, title: str) -> None:
+    """段落标题；--json 模式走 stderr 避免污染 stdout 的结构化输出。"""
+    print(title, file=sys.stderr if doc._json_mode else sys.stdout)
+
+
 def _doctor_global(doc: _Doctor) -> None:
     """全局检查：docker 可用性、/dev/dri、TISHEN_HOME 结构。"""
-    print("── 全局环境检查 ──")
+    _doctor_header(doc, "── 全局环境检查 ──")
     try:
         ok, info = docker_ctl.docker_available()
     except FileNotFoundError:
@@ -373,7 +495,7 @@ def _doctor_global(doc: _Doctor) -> None:
 
 def _doctor_persona(doc: _Doctor, persona_id: str) -> None:
     """替身级检查：登记在否、yaml 过 linter、容器在否、卷在否、shm-size。"""
-    print(f"── 替身 {persona_id} 检查 ──")
+    _doctor_header(doc, f"── 替身 {persona_id} 检查 ──")
     with StateDB() as db:
         rec = db.get(persona_id)
     doc.check(rec is not None, "替身已登记到状态库",
@@ -424,11 +546,16 @@ def _doctor_persona(doc: _Doctor, persona_id: str) -> None:
 
 
 def cmd_doctor(args) -> int:
-    doc = _Doctor()
+    json_mode = _json_mode(args)
+    doc = _Doctor(json_mode=json_mode)
     if args.id:
         _doctor_persona(doc, args.id)
     else:
         _doctor_global(doc)
+    if json_mode:
+        print(json.dumps({"failed": doc.failed, "checks": doc.items},
+                         ensure_ascii=False))
+        return 1 if doc.failed else 0
     print()
     if doc.failed:
         print(f"自检完成：{doc.failed} 项未通过，请按上方修复建议处理。")
@@ -438,15 +565,61 @@ def cmd_doctor(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# pull（M2 新增）：外壳首启引导第 3 步拉取平台镜像（一切 docker 操作经 CLI）
+# ---------------------------------------------------------------------------
+
+def cmd_pull(args) -> int:
+    """tishen pull [--json]：拉取替身平台镜像；已存在则跳过（幂等）。"""
+    tag = _image_tag()
+    json_mode = _json_mode(args)
+
+    def info(msg: str) -> None:
+        print(msg, file=sys.stderr if json_mode else sys.stdout)
+
+    try:
+        if docker_ctl.image_exists(tag):
+            info(f"镜像 {tag} 已存在，跳过拉取。")
+            if json_mode:
+                print(json.dumps({"image": tag, "pulled": False,
+                                  "present": True}, ensure_ascii=False))
+            return 0
+        info(f"正在拉取镜像 {tag}（体积较大，请耐心等待）……")
+        rc, out, err = docker_ctl.pull_image(tag)
+    except FileNotFoundError:
+        print("错误：本机未找到 docker，无法拉取镜像。", file=sys.stderr)
+        return 1
+    if rc != 0:
+        print(f"错误：镜像拉取失败（退出码 {rc}）：{(err or out).strip()}",
+              file=sys.stderr)
+        print("提示：检查网络后重试；若磁盘不足请清理后重试。", file=sys.stderr)
+        return 1
+    info(f"镜像 {tag} 拉取完成。")
+    if json_mode:
+        print(json.dumps({"image": tag, "pulled": True, "present": True},
+                         ensure_ascii=False))
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
+    # M2 全局 --json：经 parents 挂到需要的子命令上（list/start/events），
+    # 顶层也注册一份，使 `tishen --json list` 与 `tishen list --json` 两种写法都成立。
+    # 注意：parents 里的默认值必须 SUPPRESS，否则子命令解析时会把顶层已置位的 True 覆盖回 False。
+    json_parent = argparse.ArgumentParser(add_help=False)
+    json_parent.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                             help="以 JSON 输出（供外壳等程序消费）")
+
     parser = argparse.ArgumentParser(
         prog="tishen", description="替身（Tishen）编排命令行：创建/生命周期/门禁/自检")
+    parser.add_argument("--json", action="store_true",
+                        help="以 JSON 输出（仅 list/start/events 支持，可放子命令后）")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("create", help="创建替身（采样→过滤→门禁→落盘→建卷→登记）")
+    p = sub.add_parser("create", parents=[json_parent],
+                       help="创建替身（采样→过滤→门禁→落盘→建卷→登记）")
     p.add_argument("--region", choices=REGION_CHOICES, default="auto",
                    help="属地偏好，默认 auto（跟随实测 IP 属地）")
     p.add_argument("--name", default=None, help="替身名（1–32 字符）")
@@ -454,29 +627,43 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_create)
 
     for name, help_text in (
-            ("start", "启动替身（容器不存在则 docker run 创建）"),
+            ("start", "启动替身（容器不存在则 docker run 创建；--json 输出连接信息）"),
             ("stop", "停止替身容器"),
             ("suspend", "挂起替身（docker pause）"),
             ("resume", "恢复替身（docker unpause）"),
             ("reset", "信誉清零：二次确认后重建 profile 卷"),
             ("destroy", "销毁替身：删容器 + 两卷 + 状态置 destroyed")):
-        p = sub.add_parser(name, help=help_text)
+        # start 支持 --json（SPEC-M2M3 §1.3 输出契约）
+        p = sub.add_parser(name, help=help_text,
+                           parents=[json_parent] if name == "start" else [])
         p.add_argument("id", help="替身 ID（p_ 开头）")
         p.set_defaults(func={"start": cmd_start, "stop": cmd_stop,
                              "suspend": cmd_suspend, "resume": cmd_resume,
                              "reset": cmd_reset, "destroy": cmd_destroy}[name])
 
-    p = sub.add_parser("list", help="列出替身")
+    p = sub.add_parser("list", help="列出替身", parents=[json_parent])
     p.add_argument("--all", action="store_true", help="包含已销毁的替身")
     p.set_defaults(func=cmd_list)
+
+    p = sub.add_parser("events", parents=[json_parent],
+                       help="查询替身事件流（M3 观测模块提供数据；未安装时给出提示）")
+    p.add_argument("id", help="替身 ID（p_ 开头）")
+    p.add_argument("--type", default=None, help="按事件类型过滤（枚举见 M3 方案 §3.2）")
+    p.add_argument("--limit", type=int, default=50, help="最多返回条数（默认 50）")
+    p.set_defaults(func=cmd_events)
 
     p = sub.add_parser("lint", help="对任意 persona.yaml 跑结构校验 + 门禁 V1–V10")
     p.add_argument("persona_yaml", help="persona.yaml 路径")
     p.set_defaults(func=cmd_lint)
 
-    p = sub.add_parser("doctor", help="自检：无 id 查全局，有 id 查指定替身")
+    p = sub.add_parser("doctor", parents=[json_parent],
+                       help="自检：无 id 查全局，有 id 查指定替身（--json 供外壳消费）")
     p.add_argument("id", nargs="?", default=None, help="替身 ID（可选）")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("pull", parents=[json_parent],
+                       help="拉取替身平台镜像（已存在则跳过；M2 首启引导用）")
+    p.set_defaults(func=cmd_pull)
 
     return parser
 
