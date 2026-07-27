@@ -1,0 +1,62 @@
+# 负例 V2：os.family=windows（SPEC §1 fixtures）
+# 仅触发 LINT_V2；V7 在 os.family 未知时跳过（根因由 V2 负责，见 linter 注释），
+# 其余恒真规则刻意保持合法（SPEC §9.5）。
+version: 1
+meta:
+  id: p_20260727_b2v2
+  name: 伪装 Windows 替身
+  created_at: "2026-07-27T22:40:00+08:00"
+
+region:
+  follow_ip: true
+  detected_ip_region: CN
+  locale: zh-CN
+  timezone: Asia/Shanghai
+  languages: [zh-CN, zh, en-US, en]
+
+os:
+  family: windows              # ← V2：本期平台锁定 linux
+  distro: ubuntu-24.04
+  chrome_channel: stable
+
+hardware:
+  gpu:
+    mode: host_passthrough
+    renderer_string_source: real
+  hardwareConcurrency: 8
+  deviceMemory: 8
+
+display:
+  width: 1920
+  height: 1080
+  dpr: 1.0
+
+fonts:
+  pack: linux-noto-standard
+  extras: [cjk]
+
+webrtc:
+  ip_handling_policy: disable_non_proxied_udp
+
+farbling:
+  seed: 9f2c4e8a1b3d5f7046a8c2e1d3b5f709
+  scope: [canvas_readback, webgl_readback, audio]
+
+evolution:
+  strategy: anchor_chrome_version
+  baseline_chrome: 138.0.7204.0
+  drift_policy: follow_stable_diff
+
+proxy: null
+
+storage:
+  profile_volume: ts_p_20260727_b2v2_profile
+  log_volume: ts_p_20260727_b2v2_logs
+  retain_days: 30
+
+monitoring:
+  keylog: true
+  log_encryption: age
+
+lifecycle:
+  state: active

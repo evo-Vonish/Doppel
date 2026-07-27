@@ -1,0 +1,22 @@
+# tishen 核心包：persona schema / linter / sampler / 状态库 / docker 封装 / CLI
+# 依赖白名单（SPEC §0）：PyYAML 必需，browserforge 可选（缺失走离线兜底）
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tishen"
+version = "0.1.0"
+description = "替身（Tishen）M1 编排核心包：persona schema、出厂门禁 linter、采样器与 CLI"
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6.0"]
+
+[project.optional-dependencies]
+# 可选：在线采样数据源；未安装时 sampler 走 BUNDLED_DISTRIBUTION 离线兜底
+browserforge = ["browserforge"]
+
+[project.scripts]
+tishen = "tishen.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["tishen*"]
