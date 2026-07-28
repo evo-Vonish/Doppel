@@ -46,11 +46,25 @@ X_READY_TIMEOUT = 15                            # 等待 X 就绪秒数
 _CHILDREN: dict[str, subprocess.Popen] = {}
 # 本进程是否为 dry-run（供 run_cmd 打计划而非执行）
 _DRY_RUN = False
+# M5 启动计时基准（SPEC-M5 §5）：脚本入口 time.monotonic()，main() 开头赋值
+_BOOT_T0: float | None = None
 
 
 def log(msg: str) -> None:
     """中文运行日志（stdout）。"""
     print(f"[persona_bake] {msg}", flush=True)
+
+
+def _boot_mark(seg: str) -> None:
+    """M5 BOOT_MARK 打点（SPEC-M5 §5）：十步各段完成处向 stderr 打累计毫秒。
+
+    走 stderr 避免污染 --dry-run 的 stdout 契约；段名枚举与顺序：
+    entry → lint_recheck → timezone → locale → fonts → xrandr → fcitx5 → observ → neko → chrome_launch。
+    """
+    if _BOOT_T0 is None:
+        return
+    ms = int((time.monotonic() - _BOOT_T0) * 1000)
+    print(f"[BOOT_MARK] segment={seg} elapsed_ms={ms}", file=sys.stderr, flush=True)
 
 
 def fail(msg: str, code: int = 1) -> "None":
@@ -405,7 +419,10 @@ def _shutdown(signum, _frame) -> None:
 
 
 def main() -> None:
-    global _DRY_RUN
+    global _DRY_RUN, _BOOT_T0
+    # M5 启动计时基准（SPEC-M5 §5）：脚本入口即打点，entry 段 elapsed=0
+    _BOOT_T0 = time.monotonic()
+    _boot_mark("entry")
     parser = argparse.ArgumentParser(description="替身容器 persona 烘焙器（SPEC §6）")
     parser.add_argument("--dry-run", action="store_true",
                         help="冒烟模式：跑完第 1–7.5 步后打印将要执行的 neko/Chrome 启动计划并退出 0")
@@ -420,14 +437,23 @@ def main() -> None:
         fail(f"MONITOR_PCAP={monitor_pcap} 非法（可选 0|1）", 2)
 
     # 第 1–7.5 步：门禁 → 时区 → locale → 字体 → 显示 → 输入法 → 观测 → neko 流服务
+    # 各段完成处打 BOOT_MARK（SPEC-M5 §5，段名枚举与顺序固定，stderr）
     persona = step1_gate()
+    _boot_mark("lint_recheck")
     step2_timezone(persona)
+    _boot_mark("timezone")
     step3_locale(persona)
+    _boot_mark("locale")
     step4_fonts(persona)
+    _boot_mark("fonts")
     step5_display(persona)
+    _boot_mark("xrandr")
     step6_input_method()
+    _boot_mark("fcitx5")
     step7_observability(monitor_pcap)
+    _boot_mark("observ")
     step7_5_neko()
+    _boot_mark("neko")
 
     # 第 8/9 步：组装启动行 + 禁项自检
     chrome_argv = build_chrome_argv(persona, gpu_vendor)
@@ -437,6 +463,7 @@ def main() -> None:
     if _DRY_RUN:
         log("dry-run 完成（第 1–7.5 步已执行/预演），将要执行的 Chrome 启动行：")
         print(launch_line)
+        _boot_mark("chrome_launch")  # dry-run 预演至启动行组装完成
         sys.exit(0)
 
     # 第 8 步执行：启动 Chrome 为会话主进程。
@@ -449,6 +476,7 @@ def main() -> None:
         _CHILDREN["chrome"] = subprocess.Popen(chrome_argv)
     except OSError as exc:
         fail(f"启动 Chrome 失败：{exc}")
+    _boot_mark("chrome_launch")  # Chrome 已拉起（SPEC-M5 §5 末段）
     rc = _CHILDREN["chrome"].wait()
     log(f"Chrome 退出（rc={rc}），按序收尾后台进程（neko → fcitx5 → 观测守护）")
     _terminate("neko")
