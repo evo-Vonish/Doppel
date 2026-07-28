@@ -350,15 +350,20 @@ def test_health(client):
     assert r.status_code == 200 and r.json() == {"ok": True}
 
 
-def test_post_valid_capture(client):
-    """合法 capture：201 入库，payload 原文落 captures（entry=probe）。"""
+def test_post_valid_capture(client, monkeypatch):
+    """合法 capture：201 入库，payload 原文落 captures（entry=probe）。
+
+    降级路径：monkeypatch 屏蔽 tishen.adversarial.rgate（模拟未安装环境，
+    与 M3 test_events_without_observ_module 同款手法），占位钩子只存不评。
+    """
+    monkeypatch.setitem(sys.modules, "tishen.adversarial.rgate", None)
     c, db = client
     r = c.post("/capture?group_tag=T-cold&persona_id=p1",
                json=CAPTURE_FIXTURE)
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["ok"] is True and isinstance(body["capture_id"], int)
-    # tishen.adversarial.rgate 未合并：占位钩子只存不评
+    # rgate 不可用（模拟）：占位钩子只存不评
     assert body["rgate"] == "unavailable"
     with sqlite3.connect(db) as conn:
         row = conn.execute(
@@ -409,16 +414,36 @@ def test_post_invalid_group_tag(client):
     assert r.json()["error"]["code"] == "INVALID_PARAM"
 
 
-def test_rgate_placeholder_no_report_written(client):
+def test_rgate_placeholder_no_report_written(client, monkeypatch):
     """rgate 不可导入时不写 clr_reports（只存不评），捕获仍入库。"""
+    # 合并后 rgate 常驻可用——monkeypatch 屏蔽以固定"降级路径"语义
+    monkeypatch.setitem(sys.modules, "tishen.adversarial.rgate", None)
     c, db = client
-    assert "tishen.adversarial.rgate" not in sys.modules
+    assert sys.modules.get("tishen.adversarial.rgate") is None
     r = c.post("/capture", json=CAPTURE_FIXTURE)
     assert r.status_code == 201
     with sqlite3.connect(db) as conn:
         n = conn.execute("SELECT COUNT(*) FROM clr_reports").fetchone()[0]
         m = conn.execute("SELECT COUNT(*) FROM captures").fetchone()[0]
     assert n == 0 and m == 1
+
+
+def test_post_valid_capture_rgate_integrated(client):
+    """集成分支（A/B 合并后的真实行为）：rgate 可用 → 评估并写 clr_reports。
+
+    SPEC-M4 §7 契约抽查：B 的 CAPTURE_FIXTURE 须能被 A 的 run_rgate 消费，
+    报告含清单版本 clr-checklist-v1（跨 Coder 集成断言）。
+    """
+    c, db = client
+    r = c.post("/capture", json=CAPTURE_FIXTURE)
+    assert r.status_code == 201, r.text
+    assert r.json()["rgate"] == "evaluated"
+    with sqlite3.connect(db) as conn:
+        row = conn.execute("SELECT report FROM clr_reports").fetchone()
+    assert row is not None
+    report = json.loads(row[0])
+    assert report["checklist_version"] == "clr-checklist-v1"
+    assert report["total"] > 0 and "hits" in report and "skipped" in report
 
 
 # ---------------------------------------------------------------------------
