@@ -357,6 +357,9 @@ def test_post_valid_capture(client, monkeypatch):
     与 M3 test_events_without_observ_module 同款手法），占位钩子只存不评。
     """
     monkeypatch.setitem(sys.modules, "tishen.adversarial.rgate", None)
+    # 防父包属性缓存：rgate 一旦被正常导入过，tishen.adversarial.rgate 属性即绑定，
+    # from-import 会命中父包属性绕过 sys.modules 屏蔽——一并删除（monkeypatch 自动还原）
+    monkeypatch.delattr("tishen.adversarial.rgate", raising=False)
     c, db = client
     r = c.post("/capture?group_tag=T-cold&persona_id=p1",
                json=CAPTURE_FIXTURE)
@@ -418,6 +421,7 @@ def test_rgate_placeholder_no_report_written(client, monkeypatch):
     """rgate 不可导入时不写 clr_reports（只存不评），捕获仍入库。"""
     # 合并后 rgate 常驻可用——monkeypatch 屏蔽以固定"降级路径"语义
     monkeypatch.setitem(sys.modules, "tishen.adversarial.rgate", None)
+    monkeypatch.delattr("tishen.adversarial.rgate", raising=False)  # 防父包属性缓存（同上）
     c, db = client
     assert sys.modules.get("tishen.adversarial.rgate") is None
     r = c.post("/capture", json=CAPTURE_FIXTURE)
