@@ -14,6 +14,8 @@ dependencies = ["PyYAML>=6.0"]
 [project.optional-dependencies]
 # 可选：在线采样数据源；未安装时 sampler 走 BUNDLED_DISTRIBUTION 离线兜底
 browserforge = ["browserforge"]
+# 可选：本地 API 桥（tishen.api，宿主侧服务；镜像 --no-deps 不受影响）
+api = ["fastapi>=0.110", "uvicorn>=0.29"]
 
 [project.scripts]
 tishen = "tishen.cli:main"
