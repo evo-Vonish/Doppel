@@ -1,0 +1,6 @@
+# 运行时产物（不入库）
+probe.db
+probe.db-*
+creepjs_selfhost/repo/
+creepjs_selfhost/commit.txt
+creepjs_export.json

@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<!--
+  替身 Tishen M4 · 对抗测试探针页（SPEC-M4 §2 FingerprintCapture）
+  纪律：
+  - 纯原生 JS，零外链零 CDN（不加载任何外部脚本/样式/字体，不发起除
+    /capture 与 tls.peet.ws 断言外的网络请求）；
+  - 采集 SPEC-M4 §2 全部字段，字段缺失一律 null，不编造；
+  - canvas 双读间隔 ≥1200ms（噪声稳定性测量口径）；
+  - cross_reads 走同源 Worker（Blob URL）+ 同源 iframe（srcdoc）独立路径；
+  - POST /capture 失败时把完整 JSON 展示在页面供手抄；
+  - 禁用 CDP/Playwright/Puppeteer 驱动被测浏览器（测量零污染原则，
+    本页完全页面内自采集）。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Tishen M4 探针页</title>
+<style>
+  body { font-family: monospace; margin: 2em; background:#fafafa; color:#222; }
+  h1 { font-size: 1.2em; }
+  #status { padding: .8em; border: 1px solid #999; background:#fff; white-space: pre-wrap; }
+  #manual { display:none; margin-top:1em; padding:.8em; border:2px solid #c00; background:#fff8f8; }
+  #manual textarea { width:100%; height:18em; font-family: monospace; }
+</style>
+</head>
+<body>
+<h1>Tishen M4 对抗测试探针页（本地自采集，请勿用自动化工具驱动）</h1>
+<div id="status">采集中……</div>
+<div id="manual">
+  <p><b>POST /capture 失败。</b>请手抄/复制下面完整 JSON 交回收集端（页面 URL 查询串
+  ?group=T-cold|A-native|...&persona=替身ID 决定分组标注）：</p>
+  <textarea id="payload" readonly></textarea>
+</div>
+<script>
+"use strict";
+(function () {
+  // ---------- 小工具 ----------
+  var statusEl = document.getElementById("status");
+  function log(msg) { statusEl.textContent += "\n" + msg; }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  // SHA-256 十六进制；crypto.subtle 不可用（非安全上下文）时退化为 FNV-1a，均不编造
+  function hashText(text) {
+    if (window.crypto && crypto.subtle && window.isSecureContext !== false) {
+      return crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))
+        .then(function (buf) {
+          return Array.prototype.map.call(new Uint8Array(buf), function (b) {
+            return ("0" + b.toString(16)).slice(-2);
+          }).join("");
+        })
+        .catch(function () { return fnv1a(text); });
+    }
+    return Promise.resolve(fnv1a(text));
+  }
+  function fnv1a(text) {
+    var h = 0x811c9dc5;
+    for (var i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = (h * 0x01000193) >>> 0;
+    }
+    return "fnv1a:" + ("0000000" + h.toString(16)).slice(-8);
+  }
+
+  // ---------- navigator / sec_ch_ua / screen / intl ----------
+  function collectNavigator() {
+    var n = window.navigator;
+    return {
+      userAgent: typeof n.userAgent === "string" ? n.userAgent : null,
+      platform: typeof n.platform === "string" ? n.platform : null,
+      vendor: typeof n.vendor === "string" ? n.vendor : null,
+      languages: Array.isArray(n.languages) ? n.languages.slice() : null,
+      hardwareConcurrency: typeof n.hardwareConcurrency === "number" ? n.hardwareConcurrency : null,
+      deviceMemory: typeof n.deviceMemory === "number" ? n.deviceMemory : null,
+      maxTouchPoints: typeof n.maxTouchPoints === "number" ? n.maxTouchPoints : 0,
+      webdriver: typeof n.webdriver === "boolean" ? n.webdriver : null,
+      cookieEnabled: typeof n.cookieEnabled === "boolean" ? n.cookieEnabled : null,
+      pdfViewerEnabled: typeof n.pdfViewerEnabled === "boolean" ? n.pdfViewerEnabled : null,
+      doNotTrack: typeof n.doNotTrack === "string" ? n.doNotTrack : null
+    };
+  }
+
+  function collectSecChUa() {
+    var uad = window.navigator.userAgentData;
+    if (!uad) return null; // 浏览器不支持 UA-CH：整组缺失记 null，不编造
+    var base = {
+      brands: Array.isArray(uad.brands) ? uad.brands.map(function (b) {
+        return { brand: b.brand, version: b.version };
+      }) : null,
+      mobile: typeof uad.mobile === "boolean" ? uad.mobile : null,
+      platform: null, platformVersion: null, uaFullVersion: null, fullVersionList: null
+    };
+    if (typeof uad.getHighEntropyValues !== "function") return Promise.resolve(base);
+    return uad.getHighEntropyValues(
+      ["platform", "platformVersion", "uaFullVersion", "fullVersionList"]
+    ).then(function (hv) {
+      base.platform = typeof hv.platform === "string" ? hv.platform : null;
+      base.platformVersion = typeof hv.platformVersion === "string" ? hv.platformVersion : null;
+      base.uaFullVersion = typeof hv.uaFullVersion === "string" ? hv.uaFullVersion : null;
+      base.fullVersionList = Array.isArray(hv.fullVersionList) ? hv.fullVersionList.map(function (b) {
+        return { brand: b.brand, version: b.version };
+      }) : null;
+      return base;
+    }).catch(function () { return base; });
+  }
+
+  function collectScreen() {
+    var s = window.screen;
+    return {
+      width: s.width, height: s.height,
+      availWidth: s.availWidth, availHeight: s.availHeight,
+      colorDepth: s.colorDepth, pixelDepth: s.pixelDepth,
+      devicePixelRatio: window.devicePixelRatio,
+      innerWidth: window.innerWidth, innerHeight: window.innerHeight,
+      outerWidth: window.outerWidth, outerHeight: window.outerHeight
+    };
+  }
+
+  function collectIntl() {
+    var ro = {};
+    try { ro = Intl.DateTimeFormat().resolvedOptions() || {}; } catch (e) {}
+    return {
+      locale: typeof ro.locale === "string" ? ro.locale : null,
+      calendar: typeof ro.calendar === "string" ? ro.calendar : null,
+      numberingSystem: typeof ro.numberingSystem === "string" ? ro.numberingSystem : null,
+      timeZone: typeof ro.timeZone === "string" ? ro.timeZone : null,
+      tzOffsetMinutes: new Date().getTimezoneOffset()
+    };
+  }
+
+  // ---------- webgl ----------
+  function collectWebgl() {
+    var out = {
+      vendor: null, renderer: null, unmaskedVendor: null, unmaskedRenderer: null,
+      version: null, glslVersion: null, maxTextureSize: null, maxViewportDims: null,
+      maxVertexAttribs: null, maxCombinedTextureImageUnits: null, extensions: null
+    };
+    try {
+      var c = document.createElement("canvas");
+      var gl = c.getContext("webgl") || c.getContext("experimental-webgl");
+      if (!gl) return out; // 无 WebGL：整组 null，不编造
+      out.vendor = gl.getParameter(gl.VENDOR);
+      out.renderer = gl.getParameter(gl.RENDERER);
+      out.version = gl.getParameter(gl.VERSION);
+      out.glslVersion = gl.getParameter(gl.SHADING_LANGUAGE_VERSION);
+      out.maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+      var dims = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
+      out.maxViewportDims = dims ? [dims[0], dims[1]] : null;
+      out.maxVertexAttribs = gl.getParameter(gl.MAX_VERTEX_ATTRIBS);
+      out.maxCombinedTextureImageUnits = gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS);
+      out.extensions = gl.getSupportedExtensions() || [];
+      var ext = gl.getExtension("WEBGL_debug_renderer_info");
+      if (ext) {
+        out.unmaskedVendor = gl.getParameter(ext.UNMASKED_VENDOR_WEBGL);
+        out.unmaskedRenderer = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+      }
+    } catch (e) { /* 保持 null */ }
+    return out;
+  }
+
+  // ---------- canvas 双读（间隔 ≥1200ms，噪声稳定性口径） ----------
+  function drawCanvas() {
+    var c = document.createElement("canvas");
+    c.width = 280; c.height = 60;
+    var ctx = c.getContext("2d");
+    if (!ctx) return null;
+    ctx.textBaseline = "top";
+    ctx.font = "16px 'Arial'";
+    ctx.fillStyle = "#f60";
+    ctx.fillRect(125, 1, 62, 20);
+    ctx.fillStyle = "#069";
+    ctx.fillText("Tishen替身探针Cwm🙂", 2, 15);
+    ctx.fillStyle = "rgba(102,204,0,0.7)";
+    ctx.fillText("Tishen替身探针Cwm🙂", 4, 17);
+    ctx.beginPath();
+    ctx.arc(50, 40, 15, 0, Math.PI * 2, true);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(0,0,255,0.5)";
+    ctx.fill();
+    try { return c.toDataURL(); } catch (e) { return null; }
+  }
+
+  // ---------- audio（OfflineAudioContext 指纹，单读） ----------
+  function collectAudioHash() {
+    return new Promise(function (resolve) {
+      var AC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      if (!AC) return resolve(null);
+      try {
+        var ctx = new AC(1, 44100, 44100);
+        var osc = ctx.createOscillator();
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(10000, ctx.currentTime);
+        var comp = ctx.createDynamicsCompressor();
+        comp.threshold.setValueAtTime(-50, ctx.currentTime);
+        comp.knee.setValueAtTime(40, ctx.currentTime);
+        comp.ratio.setValueAtTime(12, ctx.currentTime);
+        comp.attack.setValueAtTime(0, ctx.currentTime);
+        comp.release.setValueAtTime(0.25, ctx.currentTime);
+        osc.connect(comp);
+        comp.connect(ctx.destination);
+        osc.start(0);
+        ctx.startRendering().then(function (buf) {
+          var data = buf.getChannelData(0), sum = 0;
+          for (var i = 4500; i < 5000 && i < data.length; i++) sum += Math.abs(data[i]);
+          hashText(String(sum)).then(resolve, function () { resolve(null); });
+        }).catch(function () { resolve(null); });
+      } catch (e) { resolve(null); }
+    });
+  }
+
+  // ---------- fonts（measureText 宽度差分探测，排序后返回） ----------
+  var FONT_PROBE_LIST = [
+    "Arial", "Arial Black", "Calibri", "Cambria", "Comic Sans MS", "Consolas",
+    "Courier New", "Georgia", "Helvetica", "Impact", "Lucida Console",
+    "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans CJK TC", "Noto Serif CJK SC",
+    "Palatino Linotype", "PingFang SC", "Segoe UI", "SimHei", "SimSun",
+    "Tahoma", "Times New Roman", "Trebuchet MS", "Ubuntu", "Verdana",
+    "WenQuanYi Micro Hei", "DejaVu Sans", "DejaVu Serif", "Liberation Sans",
+    "Liberation Serif", "Cantarell", "Monaco", "Menlo", "Fira Sans"
+  ];
+  function collectFonts() {
+    try {
+      var c = document.createElement("canvas");
+      var ctx = c.getContext("2d");
+      if (!ctx) return null;
+      var text = "mmmmmmmmmmlli替Ww";
+      var bases = ["monospace", "sans-serif", "serif"];
+      var baseW = bases.map(function (b) {
+        ctx.font = "72px " + b;
+        return ctx.measureText(text).width;
+      });
+      var found = [];
+      FONT_PROBE_LIST.forEach(function (f) {
+        var hit = bases.some(function (b, i) {
+          ctx.font = "72px '" + f + "'," + b;
+          return ctx.measureText(text).width !== baseW[i];
+        });
+        if (hit) found.push(f);
+      });
+      return found.sort();
+    } catch (e) { return null; }
+  }
+
+  // ---------- media ----------
+  function collectMedia() {
+    return new Promise(function (resolve) {
+      var videoCodecs = [], audioCodecs = [];
+      try {
+        var v = document.createElement("video");
+        ["video/mp4; codecs=\"avc1.42E01E\"", "video/mp4; codecs=\"avc1.640028\"",
+         "video/webm; codecs=\"vp8\"", "video/webm; codecs=\"vp9\"",
+         "video/mp4; codecs=\"hev1.1.6.L93.90\"", "video/ogg; codecs=\"theora\""
+        ].forEach(function (t) {
+          var ok = false;
+          if (v.canPlayType) ok = v.canPlayType(t) !== "";
+          if (!ok && window.MediaSource && MediaSource.isTypeSupported) {
+            try { ok = MediaSource.isTypeSupported(t); } catch (e) {}
+          }
+          if (ok) videoCodecs.push(t);
+        });
+        var a = document.createElement("audio");
+        ["audio/mpeg", "audio/mp4; codecs=\"mp4a.40.2\"", "audio/ogg; codecs=\"vorbis\"",
+         "audio/webm; codecs=\"opus\"", "audio/wav; codecs=\"1\"", "audio/aac"
+        ].forEach(function (t) {
+          if (a.canPlayType && a.canPlayType(t) !== "") audioCodecs.push(t);
+        });
+      } catch (e) { videoCodecs = null; audioCodecs = null; }
+      function done(devices) {
+        resolve({ videoCodecs: videoCodecs, audioCodecs: audioCodecs, devices: devices });
+      }
+      if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+        navigator.mediaDevices.enumerateDevices().then(function (ds) {
+          done(ds.map(function (d) {
+            return { kind: d.kind || "", label: d.label || "", groupId: d.groupId || "" };
+          }));
+        }).catch(function () { done(null); });
+      } else {
+        done(null);
+      }
+    });
+  }
+
+  // ---------- permissions ----------
+  var PERMISSION_NAMES = [
+    "geolocation", "notifications", "camera", "microphone", "midi",
+    "persistent-storage", "accelerometer", "gyroscope", "magnetometer",
+    "clipboard-read", "background-sync", "ambient-light-sensor"
+  ];
+  function collectPermissions() {
+    if (!navigator.permissions || !navigator.permissions.query) return Promise.resolve(null);
+    var out = {};
+    return Promise.all(PERMISSION_NAMES.map(function (name) {
+      return navigator.permissions.query({ name: name }).then(function (st) {
+        out[name] = st.state;
+      }).catch(function () { /* 不支持查询的权限名：跳过，不编造 */ });
+    })).then(function () { return out; });
+  }
+
+  // ---------- storage ----------
+  function collectStorage() {
+    function probe(fn) { try { return fn(); } catch (e) { return false; } }
+    return {
+      localStorage: probe(function () {
+        localStorage.setItem("__tishen_probe", "1");
+        localStorage.removeItem("__tishen_probe");
+        return true;
+      }),
+      indexedDB: probe(function () { return !!window.indexedDB; }),
+      sessionStorage: probe(function () {
+        sessionStorage.setItem("__tishen_probe", "1");
+        sessionStorage.removeItem("__tishen_probe");
+        return true;
+      })
+    };
+  }
+
+  // ---------- webrtc（纯本机 ICE，不使用外部 STUN，避免外链） ----------
+  function collectWebrtc() {
+    return new Promise(function (resolve) {
+      var out = { candidates: null, ipHandlingSeen: false };
+      if (typeof RTCPeerConnection !== "function") return resolve(out);
+      var seen = [];
+      try {
+        var pc = new RTCPeerConnection({ iceServers: [] }); // 空 ICE 服务器：零外链
+        pc.createDataChannel("tishen");
+        var timer = setTimeout(finish, 3000);
+        function finish() {
+          clearTimeout(timer);
+          try { pc.close(); } catch (e) {}
+          out.candidates = seen;
+          out.ipHandlingSeen = seen.length > 0;
+          resolve(out);
+        }
+        pc.onicecandidate = function (ev) {
+          if (!ev.candidate) return finish();
+          var cand = ev.candidate.candidate || "";
+          // 提取类型（host/srflx/...）与 IP，IP 末段打码（口径见 SPEC §2）
+          var m = cand.match(/candidate:\S+ \d+ \S+ \d+ (\S+) \d+ typ (\w+)/);
+          if (m) {
+            var ip = m[1], typ = m[2];
+            var masked = ip.replace(/(\d+)\.(\d+)\.(\d+)\.\d+/, "$1.$2.$3.x")
+                           .replace(/([0-9a-f:]+):[0-9a-f]+$/i, "$1:xxxx");
+            seen.push(typ + " " + masked);
+          } else {
+            seen.push(cand.slice(0, 64));
+          }
+        };
+        pc.createOffer().then(function (offer) {
+          return pc.setLocalDescription(offer);
+        }).catch(finish);
+      } catch (e) { resolve(out); }
+    });
+  }
+
+  // ---------- cross_reads：同源 Worker（Blob URL）+ 同源 iframe（srcdoc） ----------
+  function readFromWorker() {
+    return new Promise(function (resolve) {
+      var out = { ua: null, platform: null, hwc: null, languages: null };
+      if (typeof Worker !== "function" || typeof Blob !== "function") return resolve(out);
+      var src = "onmessage=function(){postMessage({" +
+        "ua:navigator.userAgent,platform:navigator.platform," +
+        "hwc:navigator.hardwareConcurrency,languages:navigator.languages||null});};";
+      var url = null;
+      try {
+        url = URL.createObjectURL(new Blob([src], { type: "application/javascript" }));
+        var w = new Worker(url);
+        var timer = setTimeout(function () { cleanup(); resolve(out); }, 3000);
+        function cleanup() { try { w.terminate(); } catch (e) {} if (url) URL.revokeObjectURL(url); }
+        w.onmessage = function (ev) {
+          clearTimeout(timer);
+          out.ua = ev.data.ua || null;
+          out.platform = ev.data.platform || null;
+          out.hwc = typeof ev.data.hwc === "number" ? ev.data.hwc : null;
+          out.languages = Array.isArray(ev.data.languages) ? ev.data.languages : null;
+          cleanup(); resolve(out);
+        };
+        w.onerror = function () { clearTimeout(timer); cleanup(); resolve(out); };
+        w.postMessage("go");
+      } catch (e) { if (url) URL.revokeObjectURL(url); resolve(out); }
+    });
+  }
+
+  function readFromIframe() {
+    return new Promise(function (resolve) {
+      var out = { ua: null, platform: null, hwc: null, tz: null };
+      try {
+        var f = document.createElement("iframe");
+        f.style.display = "none";
+        // srcdoc 同源 iframe：独立 JS 全局环境（独立路径读值）
+        f.srcdoc = "<!DOCTYPE html><html><body></body></html>";
+        document.body.appendChild(f);
+        f.onload = function () {
+          try {
+            var w = f.contentWindow;
+            out.ua = w.navigator.userAgent || null;
+            out.platform = w.navigator.platform || null;
+            out.hwc = typeof w.navigator.hardwareConcurrency === "number"
+              ? w.navigator.hardwareConcurrency : null;
+            out.tz = w.Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+          } catch (e) { /* 保持 null */ }
+          document.body.removeChild(f);
+          resolve(out);
+        };
+        setTimeout(function () { // 兜底：onload 不触发也尽量读一次
+          if (f.parentNode) {
+            try {
+              var w = f.contentWindow;
+              if (w && w.navigator) {
+                out.ua = w.navigator.userAgent || null;
+                out.platform = w.navigator.platform || null;
+                out.hwc = typeof w.navigator.hardwareConcurrency === "number"
+                  ? w.navigator.hardwareConcurrency : null;
+                out.tz = w.Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+              }
+              document.body.removeChild(f);
+            } catch (e) {}
+            resolve(out);
+          }
+        }, 3000);
+      } catch (e) { resolve(out); }
+    });
+  }
+
+  // ---------- features ----------
+  function collectFeatures() {
+    function mq(q) { try { return window.matchMedia(q).matches; } catch (e) { return null; } }
+    return {
+      touchEvent: "ontouchstart" in window,
+      pointerCoarse: mq("(pointer:coarse)"),
+      pointerFine: mq("(pointer:fine)"),
+      batteryApi: typeof navigator.getBattery === "function",
+      bluetooth: "bluetooth" in navigator,
+      midi: "requestMIDIAccess" in navigator,
+      usb: "usb" in navigator,
+      sharedArrayBuffer: typeof SharedArrayBuffer !== "undefined",
+      offscreenCanvas: typeof OffscreenCanvas !== "undefined"
+    };
+  }
+
+  // ---------- cdp_traces（启发式，sannysoft 思想；只上报观测，不编造） ----------
+  function collectCdpTraces() {
+    // 1) chromedriver 注入的 cdc_ 痕迹（Runtime 评估产物）
+    var cdc = false;
+    try {
+      var props = Object.getOwnPropertyNames(window)
+        .concat(Object.getOwnPropertyNames(document));
+      cdc = props.some(function (p) { return /cdc_|__cdc|cdc-/.test(p); });
+    } catch (e) {}
+    // 2) console.log 序列化副作用：getter 被触发说明有控制台/CDP 在检视对象
+    var consoleHit = false;
+    try {
+      var obj = {};
+      Object.defineProperty(obj, "id", {
+        get: function () { consoleHit = true; return "tishen"; }
+      });
+      console.log(obj);
+    } catch (e) {}
+    // 3) 栈轨迹中出现 cdp/puppeteer/playwright 字样
+    var stackHit = false;
+    try {
+      var st = (new Error()).stack || "";
+      stackHit = /cdp|puppeteer|playwright|__playwright/i.test(st);
+    } catch (e) {}
+    return {
+      runtimeEnableArtifacts: cdc,
+      consoleLogArtifacts: consoleHit,
+      stackTracesContainCdp: stackHit
+    };
+  }
+
+  // ---------- tls_assert（唯一允许的外部数据请求：JA3/JA4 断言；失败记 none） ----------
+  function collectTlsAssert() {
+    var none = { ja3: null, ja4: null, source: "none" };
+    if (typeof fetch !== "function") return Promise.resolve(none);
+    var ctrl = typeof AbortController === "function" ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 6000) : null;
+    return fetch("https://tls.peet.ws/api/all", ctrl ? { signal: ctrl.signal } : {})
+      .then(function (r) { return r.ok ? r.json() : none; })
+      .then(function (d) {
+        if (timer) clearTimeout(timer);
+        if (!d || typeof d !== "object") return none;
+        return {
+          ja3: typeof d.ja3_hash === "string" ? d.ja3_hash
+             : (typeof d.ja3 === "string" ? d.ja3 : null),
+          ja4: typeof d.ja4 === "string" ? d.ja4 : null,
+          source: "tls.peet.ws"
+        };
+      })
+      .catch(function () { if (timer) clearTimeout(timer); return none; });
+  }
+
+  // ---------- 主流程 ----------
+  function main() {
+    var capture = {
+      capture_version: 1,
+      collected_at: new Date().toISOString(),
+      navigator: collectNavigator(),
+      sec_ch_ua: null,
+      screen: collectScreen(),
+      intl: collectIntl(),
+      webgl: collectWebgl(),
+      canvas: { hash_1: null, hash_2: null, read_ms: 0 },
+      audio: { hash: null },
+      fonts: null,
+      media: null,
+      permissions: null,
+      storage: collectStorage(),
+      webrtc: null,
+      cross_reads: {
+        ua_worker: null, ua_iframe: null,
+        platform_worker: null, platform_iframe: null,
+        hwc_worker: null, hwc_iframe: null,
+        tz_iframe: null, languages_worker: null
+      },
+      features: collectFeatures(),
+      cdp_traces: collectCdpTraces(),
+      tls_assert: null
+    };
+
+    // canvas 第一读
+    var t0 = Date.now();
+    var dataUrl1 = drawCanvas();
+    capture.canvas.read_ms = Date.now() - t0;
+
+    return hashText(dataUrl1 || "")
+      .then(function (h1) {
+        capture.canvas.hash_1 = dataUrl1 === null ? null : h1;
+        // canvas/audio 双读间隔 ≥1200ms（噪声稳定性口径，不足则补齐等待）
+        var gap = 1200 - (Date.now() - t0);
+        return sleep(gap > 0 ? gap : 0).then(function () {
+          var dataUrl2 = drawCanvas();
+          return hashText(dataUrl2 || "").then(function (h2) {
+            capture.canvas.hash_2 = dataUrl2 === null ? null : h2;
+          });
+        });
+      })
+      .then(function () { return collectAudioHash(); })
+      .then(function (ah) { capture.audio.hash = ah; })
+      .then(function () { capture.fonts = collectFonts(); })
+      .then(function () { return collectSecChUa(); })
+      .then(function (sc) { capture.sec_ch_ua = sc; })
+      .then(function () { return collectMedia(); })
+      .then(function (m) { capture.media = m; })
+      .then(function () { return collectPermissions(); })
+      .then(function (p) { capture.permissions = p; })
+      .then(function () { return collectWebrtc(); })
+      .then(function (w) { capture.webrtc = w; })
+      .then(function () { return readFromWorker(); })
+      .then(function (wr) {
+        capture.cross_reads.ua_worker = wr.ua;
+        capture.cross_reads.platform_worker = wr.platform;
+        capture.cross_reads.hwc_worker = wr.hwc;
+        capture.cross_reads.languages_worker = wr.languages;
+        return readFromIframe();
+      })
+      .then(function (fr) {
+        capture.cross_reads.ua_iframe = fr.ua;
+        capture.cross_reads.platform_iframe = fr.platform;
+        capture.cross_reads.hwc_iframe = fr.hwc;
+        capture.cross_reads.tz_iframe = fr.tz;
+        return collectTlsAssert();
+      })
+      .then(function (tls) {
+        capture.tls_assert = tls;
+        return postCapture(capture);
+      });
+  }
+
+  function postCapture(capture) {
+    // 分组标注来自本页 URL 查询串：?group=T-cold|A-native|...&persona=替身ID
+    var qs = new URLSearchParams(window.location.search);
+    var group = qs.get("group") || "T-cold";
+    var persona = qs.get("persona") || "";
+    var url = "http://127.0.0.1:8790/capture?group_tag=" + encodeURIComponent(group) +
+      (persona ? "&persona_id=" + encodeURIComponent(persona) : "");
+    var body = JSON.stringify(capture);
+    log("采集完成，POST 到 " + url + " ……");
+    return fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: body
+    }).then(function (r) {
+      return r.json().then(function (j) {
+        if (r.ok) {
+          log("已入库：capture_id=" + j.capture_id +
+              "（R-Gate：" + (j.rgate || "未评估") + "）");
+        } else {
+          throw new Error("HTTP " + r.status + " " + JSON.stringify(j));
+        }
+      });
+    }).catch(function (err) {
+      // POST 失败：页面展示完整 JSON 供手抄（SPEC-M4 §5）
+      log("POST /capture 失败：" + err.message + "。完整 JSON 见下方红框。");
+      document.getElementById("payload").value = body;
+      document.getElementById("manual").style.display = "block";
+    });
+  }
+
+  main().catch(function (e) {
+    log("采集主流程异常：" + (e && e.message ? e.message : String(e)));
+  });
+})();
+</script>
+</body>
+</html>
