@@ -1,0 +1,7 @@
+{
+  "name": "tishen_native_host",
+  "description": "Tishen JS hook native messaging host (SPEC-E3 §2.2)：扩展事件桥接至 hook.sock",
+  "path": "__HOST_PATH__",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://__EXT_ID__/"]
+}
