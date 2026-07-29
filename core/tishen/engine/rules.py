@@ -171,7 +171,12 @@ def parse_abp_lines(lines: Iterable[str], source: str) -> tuple[list[Rule], Pars
                 _skip("malformed")
                 continue
             tail = m.group(2)
-            if tail and tail != "^":  # 仅 '^' 收尾视为纯域名边界，等价无 path
+            # host 之后必有边界（'/'、query 或串尾），path 通配前导的 '^'
+            # 分隔符按 SPEC-E §2.1"视作边界"剥除字面值，否则匹配时会错误
+            # 消费掉 URL path 的首字符导致永不命中
+            if tail.startswith("^"):
+                tail = tail[1:]
+            if tail:
                 path_pattern = tail
             pattern_type = "domain_anchor"
         else:
@@ -214,6 +219,19 @@ def import_rules(conn: sqlite3.Connection, rules: list[Rule],
                       by_skip_reason={})
 
 
+
+def _fetch_rule_dicts(conn: sqlite3.Connection, sql: str,
+                      params) -> list[dict]:
+    """查询 rules 并返回 dict 行。
+
+    不设置 conn.row_factory——match_url 不得污染调用方共享连接的
+    属性（Wave2 daemon 复用同一连接）。
+    """
+    cur = conn.execute(sql, params)
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
 def registered_domain(host: str) -> str:
     """注册域名近似判断：**取末两段**（SPEC-E §2.2 ③口径）。
 
@@ -229,13 +247,13 @@ def _host_boundary_match(host: str, anchor: str) -> bool:
     return host == anchor or host.endswith("." + anchor)
 
 
-def _domain_modifier_ok(rule: sqlite3.Row | Rule, page_host: str | None) -> bool:
+def _domain_modifier_ok(rule: dict | Rule, page_host: str | None) -> bool:
     """$domain= 修饰过滤（SPEC-E §2.2 ④，作用于 page_host）。
 
     列表含正项时 page_host 必须命中其一；`~` 取反项命中则否决。
     page_host 为 None 时：有正项即不满足，纯取反列表视为通过。
     """
-    raw = rule["domain_modifier"] if isinstance(rule, sqlite3.Row) else rule.domain_modifier
+    raw = rule["domain_modifier"] if isinstance(rule, dict) else rule.domain_modifier
     if not raw:
         return True
     positives: list[str] = []
@@ -264,7 +282,6 @@ def match_url(conn: sqlite3.Connection, target_url: str,
     注册域名近似判断口径：末两段（不做 eTLD 精度）；page_host 为 None 时
     请求按第三方处理（无法证明同站，从严）。
     """
-    conn.row_factory = sqlite3.Row
     try:
         target_host = (urlsplit(target_url).hostname or "").lower()
     except ValueError:
@@ -275,14 +292,14 @@ def match_url(conn: sqlite3.Connection, target_url: str,
     # ① 候选：host 列索引（target_host 的全部父域后缀）+ 全表 substring
     labels = target_host.split(".")
     suffixes = [".".join(labels[i:]) for i in range(0, max(len(labels) - 1, 1))]
-    anchored: list[sqlite3.Row] = []
+    anchored: list[dict] = []
     if suffixes:
         marks = ",".join("?" for _ in suffixes)
-        anchored = list(conn.execute(
+        anchored = _fetch_rule_dicts(conn,
             f"SELECT * FROM rules WHERE pattern_type = 'domain_anchor'"
-            f" AND host IN ({marks})", suffixes))
-    substrings = list(conn.execute(
-        "SELECT * FROM rules WHERE pattern_type = 'substring'"))
+            f" AND host IN ({marks})", suffixes)
+    substrings = _fetch_rule_dicts(conn,
+        "SELECT * FROM rules WHERE pattern_type = 'substring'", ())
 
     # ③ third_party：注册域名（末两段近似）比较；page 未知从严按第三方
     is_third_party = True
@@ -294,7 +311,7 @@ def match_url(conn: sqlite3.Connection, target_url: str,
         url_after_host += "?" + urlsplit(target_url).query
     regex_cache: dict[str, re.Pattern[str]] = {}
 
-    def _pattern_ok(row: sqlite3.Row) -> bool:
+    def _pattern_ok(row: dict) -> bool:
         if row["pattern_type"] == "domain_anchor":
             if not _host_boundary_match(target_host, row["host"]):
                 return False
@@ -315,7 +332,7 @@ def match_url(conn: sqlite3.Connection, target_url: str,
             regex_cache[row["rule_id"]] = rx
         return rx.search(target_url) is not None
 
-    hits: list[sqlite3.Row] = []
+    hits: list[dict] = []
     for row in (*anchored, *substrings):
         if not _pattern_ok(row):
             continue
