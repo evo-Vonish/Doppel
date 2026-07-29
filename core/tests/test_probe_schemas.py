@@ -436,7 +436,7 @@ def test_post_valid_capture_rgate_integrated(client):
     """集成分支（A/B 合并后的真实行为）：rgate 可用 → 评估并写 clr_reports。
 
     SPEC-M4 §7 契约抽查：B 的 CAPTURE_FIXTURE 须能被 A 的 run_rgate 消费，
-    报告含清单版本 clr-checklist-v1（跨 Coder 集成断言）。
+    报告含清单版本 clr-checklist-v1.1（跨 Coder 集成断言；v1.1 追加 CLR-HOOK-*，SPEC-E4 J2）。
     """
     c, db = client
     r = c.post("/capture", json=CAPTURE_FIXTURE)
@@ -446,7 +446,7 @@ def test_post_valid_capture_rgate_integrated(client):
         row = conn.execute("SELECT report FROM clr_reports").fetchone()
     assert row is not None
     report = json.loads(row[0])
-    assert report["checklist_version"] == "clr-checklist-v1"
+    assert report["checklist_version"] == "clr-checklist-v1.1"
     assert report["total"] > 0 and "hits" in report and "skipped" in report
 
 

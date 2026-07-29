@@ -22,6 +22,25 @@ events UPDATE 语句集中在 _merge_tags / _apply_alert 两处，供评审检�
 - worker 无终止事件（EVENT_TYPES 无 worker_terminate），"长寿命"以
   窗口末端仍活跃近似（behavior._mining_signals 实现）；
 - 分桶只产出 list[Event] 与布尔参数喂 behavior/scorer，不另造口径。
+
+L2 payload 确认接入（SPEC-E4 件二 J1，方案 §二铁律：L2 只作确认加权，
+永不单独告警；L1 兜底——payload_log 缺失/空则全链路无感降级）：
+- EngineConfig.payload_log 指向 hook 层 samples.jsonl（SPEC-E2 §F3）；
+  评级前按 engine.db meta 键 payload_offset 字节游标增量读，
+  payload.analyze_sample 逐条得 verdict，内存 LRU 缓存 sha256→verdict
+  （上限 10k）；坏行容错跳过并计数（payload_skipped）。
+- 挖矿桶评级时：桶内 wasm_load/worker_spawn 事件关联到的 sha256 命中
+  缓存且 verdict.score≥60 且 findings 含 js.miner_signature 或
+  wasm.pool_section → signals 追加 "mining.payload_confirmed"
+  （参与 decide_level 计数）；无命中零影响。
+- sha256 关联口径：Event schema 无哈希字段（events.py 契约零改动）。
+  hook 侧 wasm_load 事件把 sha256 写进 summary
+  （"WebAssembly.instantiate size=N sha256=<hex> …"，tishen_hook.js），
+  故 wasm_load 从 summary 正则提取；worker_spawn summary 无哈希，
+  以 (actor_script, ts ±5s) 回退关联 samples.jsonl 的 source_url/ts
+  （样本 ts 为 epoch 秒，事件 ts 为 epoch 毫秒）。
+- behavior/scorer/payload/entity 四文件签名与逻辑零改动——确认信号
+  在 daemon 层注入 signals 列表。
 """
 
 from __future__ import annotations
@@ -29,8 +48,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sqlite3
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -39,7 +60,7 @@ from tishen.observ import store as observ_store
 from tishen.observ.events import EVENT_COLUMNS, Event, event_from_row
 from tishen.state import tishen_home
 
-from . import rules, trackerdb
+from . import payload, rules, trackerdb
 from .behavior import score_fingerprinting, score_mining
 from .entity import EntityHit, attribute
 from .scorer import decide_level
@@ -48,6 +69,16 @@ log = logging.getLogger("tishen.engine.daemon")
 
 # 单 tick 增量上限（SPEC-E §7-1）：超出记 gap=True 且只走快路径
 MAX_BATCH = 5000
+
+# L2 payload 确认（SPEC-E4 J1）：LRU 缓存上限 / 确认信号 id /
+# 确认 findings 阈值与命中集 / worker_spawn 回退关联 ts 窗口（秒）
+PAYLOAD_CACHE_MAX = 10_000
+PAYLOAD_CONFIRM_SIGNAL = "mining.payload_confirmed"
+PAYLOAD_CONFIRM_SCORE = 60
+PAYLOAD_CONFIRM_FINDINGS = frozenset({"js.miner_signature", "wasm.pool_section"})
+PAYLOAD_ASSOC_WINDOW_S = 5
+# wasm_load 事件 summary 中的 sha256 载体（tishen_hook.js 写入，见模块 docstring）
+_WASM_SHA256_RE = re.compile(r"sha256=([0-9a-fA-F]{64})")
 
 # engine.db schema（SPEC-E §1.2 原样）
 _ENGINE_SCHEMA = """
@@ -65,6 +96,9 @@ CREATE TABLE IF NOT EXISTS subject_state (  -- 评级状态（级别只升不降
     inactive_windows INTEGER NOT NULL DEFAULT 0,
     updated_ts INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS meta (  -- 引擎内部簿记（J1：payload_offset 字节游标）
+    key TEXT PRIMARY KEY, value TEXT NOT NULL
+);
 """
 
 
@@ -80,6 +114,9 @@ class EngineConfig:
     engine_db: Path | None = None
     trackerdb_db: Path | None = None
     events_db: Path | None = None
+    # SPEC-E4 J1：hook 层 samples.jsonl（SPEC-E2 §F3）；None/缺失 →
+    # L2 全链路无感降级（L1 行为通道兜底铁律）
+    payload_log: Path | None = None
 
 
 def connect_engine_db(db_path: str | Path) -> sqlite3.Connection:
@@ -142,6 +179,12 @@ class EngineDaemon:
         # 指"事件字段只读"，schema IF NOT EXISTS 不动数据）
         self._events = observ_store.connect(events_db)
         self._closed = False
+        # L2 payload 确认（SPEC-E4 J1）：LRU 缓存 sha256→verdict（上限
+        # PAYLOAD_CACHE_MAX）+ 样本索引（worker_spawn 回退关联用）+
+        # 坏行计数。payload_log=None 时全部闲置，全链路零影响（L1 兜底）。
+        self._payload_cache: OrderedDict[str, payload.PayloadVerdict] = OrderedDict()
+        self._payload_samples: list[dict] = []  # {"sha256","source_url","ts"}
+        self.payload_skipped = 0
 
     # ---- 第 1 步：cursor + 增量拉取 ---------------------------------------
 
@@ -266,6 +309,11 @@ class EngineDaemon:
             if scored is None and prev_level == 0 and prev_inactive == 0:
                 continue  # 无历史且无信号：不落状态行
             signals = scored.signals if scored else []
+            # SPEC-E4 J1：L2 payload 确认加权——仅对已有 L1 信号的桶注入
+            # （铁律：L2 永不单独告警）；无命中/payload_log 未配置零影响
+            if scored is not None and self._bucket_payload_confirmed(evts):
+                if PAYLOAD_CONFIRM_SIGNAL not in signals:
+                    signals = [*signals, PAYLOAD_CONFIRM_SIGNAL]
             score = scored.score if scored else 0
             level, inactive = decide_level(
                 signals=signals, score=score, kind="mining",
@@ -354,6 +402,122 @@ class EngineDaemon:
                  json.dumps(bucket["signals"], ensure_ascii=False),
                  bucket["inactive"], self.now_fn()))
 
+    # ---- L2 payload 确认（SPEC-E4 件二 J1）---------------------------------
+    #
+    # 铁律（方案 §二）：L2 只作确认加权，永不单独告警——确认信号仅注入
+    # 已有 L1 信号（scored is not None）的挖矿桶；payload_log 缺失/空/
+    # 不可读 → 全链路无感降级（本段函数全部提前 return，评级路径零影响）。
+
+    def _read_payload_offset(self) -> int:
+        """engine.db meta 键 payload_offset（字节游标）；无存档为 0。"""
+        row = self._engine.execute(
+            "SELECT value FROM meta WHERE key = 'payload_offset'").fetchone()
+        return int(row[0]) if row else 0
+
+    def _refresh_payload_cache(self) -> None:
+        """评级前按字节游标增量读 samples.jsonl，逐条 analyze_sample 入缓存。
+
+        只消费完整行（末条无换行的残行留待下一 tick）；文件截断/轮替
+        （size < offset）时游标归零重读；坏行（坏 JSON/缺键/坏 base64/
+        未知 kind）容错跳过并计入 payload_skipped。文件缺失/不可读静默
+        降级，不抛错。
+        """
+        path = self.config.payload_log
+        if path is None:
+            return
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return  # 缺失/不可读：L1 兜底降级，零影响
+        offset = self._read_payload_offset()
+        if size < offset:
+            offset = 0  # 截断/轮替：游标归零重读
+        try:
+            with open(path, "rb") as f:
+                f.seek(offset)
+                data = f.read()
+        except OSError:
+            return
+        last_nl = data.rfind(b"\n")
+        if last_nl < 0:
+            return  # 无新的完整行（含残行），游标不动
+        new_offset = offset + last_nl + 1
+        for line in data[:last_nl].decode("utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                sample = json.loads(line)
+                verdict = payload.analyze_sample(sample)
+            except (ValueError, TypeError):
+                self.payload_skipped += 1
+                continue
+            self._payload_cache[verdict.subject_hash] = verdict
+            self._payload_cache.move_to_end(verdict.subject_hash)
+            while len(self._payload_cache) > PAYLOAD_CACHE_MAX:
+                self._payload_cache.popitem(last=False)
+            self._payload_samples.append({
+                "sha256": verdict.subject_hash,
+                "source_url": sample.get("source_url"),
+                "ts": sample.get("ts"),
+            })
+            if len(self._payload_samples) > PAYLOAD_CACHE_MAX:
+                del self._payload_samples[:len(self._payload_samples)
+                                          - PAYLOAD_CACHE_MAX]
+        with self._engine:
+            self._engine.execute(
+                "INSERT OR REPLACE INTO meta (key, value)"
+                " VALUES ('payload_offset', ?)", (str(new_offset),))
+
+    def _payload_lookup(self, sha256: str) -> payload.PayloadVerdict | None:
+        """LRU 查 verdict（命中则刷新热度）；未命中返回 None。"""
+        verdict = self._payload_cache.get(sha256)
+        if verdict is not None:
+            self._payload_cache.move_to_end(sha256)
+        return verdict
+
+    def _event_sha256s(self, ev: Event) -> set[str]:
+        """从事件关联载荷 sha256（口径见模块 docstring，Event schema 零改动）。
+
+        wasm_load：summary 正则提取（hook 把 sha256 写进 summary）；
+        worker_spawn：summary 无哈希，以 (actor_script, ts ±5s) 回退关联
+        samples.jsonl 的 source_url/ts（样本 ts 为 epoch 秒）。
+        """
+        if ev.event_type == "wasm_load":
+            return {m.group(1).lower()
+                    for m in _WASM_SHA256_RE.finditer(ev.summary or "")}
+        if ev.event_type == "worker_spawn":
+            hits: set[str] = set()
+            ev_s = ev.ts / 1000.0
+            for s in self._payload_samples:
+                ts = s.get("ts")
+                url = s.get("source_url")
+                if not isinstance(ts, (int, float)) or not url:
+                    continue
+                if abs(float(ts) - ev_s) > PAYLOAD_ASSOC_WINDOW_S:
+                    continue
+                if url == ev.actor_script or url in (ev.summary or ""):
+                    hits.add(str(s["sha256"]))
+            return hits
+        return set()
+
+    def _bucket_payload_confirmed(self, evts: list[Event]) -> bool:
+        """桶内 wasm_load/worker_spawn 的 sha256 命中缓存且 verdict
+        达确认阈值（score≥60 且 findings 含 js.miner_signature 或
+        wasm.pool_section）。payload_log 未配置时恒 False（零影响）。"""
+        if self.config.payload_log is None:
+            return False
+        for ev in evts:
+            if ev.event_type not in ("wasm_load", "worker_spawn"):
+                continue
+            for sha in self._event_sha256s(ev):
+                verdict = self._payload_lookup(sha)
+                if (verdict is not None
+                        and verdict.score >= PAYLOAD_CONFIRM_SCORE
+                        and PAYLOAD_CONFIRM_FINDINGS & set(verdict.findings)):
+                    return True
+        return False
+
     # ---- 对外接口 -----------------------------------------------------------
 
     def run_once(self) -> dict:
@@ -373,6 +537,9 @@ class EngineDaemon:
 
         # 2. 快路径标注（含 sightings）
         records = [self._annotate(ev) for ev in events]
+
+        # 2.5 L2 payload 增量读（SPEC-E4 J1；payload_log=None/缺失时静默跳过）
+        self._refresh_payload_cache()
 
         # 3/4. 窗口聚合 + 回写（背压时跳过，只走快路径）
         alerts = 0
@@ -429,6 +596,8 @@ def main(argv=None) -> None:  # pragma: no cover - 容器入口
     parser.add_argument("--persona-id", required=True)
     parser.add_argument("--tishen-home", default=str(tishen_home()))
     parser.add_argument("--events-db", default=None)
+    parser.add_argument("--payload-log", default=None,
+                        help="hook 层 samples.jsonl（L2 确认，缺省不启用）")
     parser.add_argument("--poll-interval", type=float, default=30.0)
     parser.add_argument("--once", action="store_true", help="跑一个 tick 后退出")
     args = parser.parse_args(argv)
@@ -438,7 +607,8 @@ def main(argv=None) -> None:  # pragma: no cover - 容器入口
     config = EngineConfig(
         tishen_home=Path(args.tishen_home), persona_id=args.persona_id,
         poll_interval_s=args.poll_interval,
-        events_db=Path(args.events_db) if args.events_db else None)
+        events_db=Path(args.events_db) if args.events_db else None,
+        payload_log=Path(args.payload_log) if args.payload_log else None)
     daemon = EngineDaemon(config)
     if args.once:
         print(json.dumps(daemon.run_once(), ensure_ascii=False))

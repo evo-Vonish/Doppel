@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-CHECKLIST_VERSION = "clr-checklist-v1"
+CHECKLIST_VERSION = "clr-checklist-v1.1"  # v1.1 追加 CLR-HOOK-*（SPEC-E4 J2）
 
 
 def _field(check, name):
@@ -32,7 +32,10 @@ def run_rgate(capture: dict, checklist: list | None = None) -> dict:
          "evidence": {"<字段路径>": "<实际值>", ...}}],
      "passed": int, "skipped": [{"check_id": str, "reason": "field_missing"}]}
 
-    checklist 为 None 时使用内置 CHECKLIST_V1（clr-checklist-v1）。
+    checklist 为 None 时使用内置 CHECKLIST_V1（clr-checklist-v1.1）。
+    版本兼容口径（SPEC-E4 J2）：历史捕获的存库报告按采集时版本评
+    （旧捕获 v1、新捕获 v1.1），report.py 按报告内 checklist_version
+    字段分版本展示，本函数只对本次执行输出当前版本串。
     """
     if checklist is None:
         from .clr_checklist_v1 import CHECKLIST_V1

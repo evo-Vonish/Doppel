@@ -25,7 +25,7 @@ HC_DM_TABLE = {2: {2, 4}, 4: {2, 4, 8}, 6: {4, 8},
 
 
 def clean_capture() -> dict:
-    """一份完全自洽的 Linux 桌面 Chrome capture（所有 78 条应全部 passed）。"""
+    """一份完全自洽的 Linux 桌面 Chrome capture（所有 82 条应全部 passed）。"""
     return {
         "capture_version": 1,
         "collected_at": "2026-07-29T08:00:00.000Z",
@@ -89,6 +89,10 @@ def clean_capture() -> dict:
         "tls_assert": {"ja3": "771,4865-4866-4867-49195-49199,0-23-65281-10-11,29-23-24,0",
                        "ja4": "t13d1516h2_8daaf6152771_b1ff8ab2d16f",
                        "source": "tls.peet.ws"},
+        "hook_stealth": {"fn_to_string_native": True,
+                         "error_stack_has_tishen_frame": False,
+                         "main_world_runtime_id_reachable": False,
+                         "loopback_resource_entries": []},
     }
 
 
@@ -105,13 +109,14 @@ def skip_ids(report: dict) -> set:
 # ---------------------------------------------------------------------------
 
 def test_checklist_quota_and_unique_ids():
-    assert 60 <= len(CHECKLIST_V1) <= 80
-    assert len(CHECKLIST_V1) == 78
+    assert 60 <= len(CHECKLIST_V1) <= 90
+    assert len(CHECKLIST_V1) == 82
     ids = [c.id for c in CHECKLIST_V1]
     assert len(ids) == len(set(ids)), "清单 id 不得重复"
     family_counts = Counter(i.split("-")[1] for i in ids)
     assert family_counts == {"UA": 10, "TZ": 8, "SCR": 8, "GPU": 10, "FONT": 6,
-                             "HW": 6, "BOT": 10, "FEAT": 8, "NET": 6, "NOISE": 6}
+                             "HW": 6, "BOT": 10, "FEAT": 8, "NET": 6, "NOISE": 6,
+                             "HOOK": 4}
 
 
 def test_checklist_source_and_severity_domain():
@@ -131,11 +136,11 @@ def test_checklist_source_and_severity_domain():
 
 def test_clean_capture_all_passed():
     report = run_rgate(clean_capture())
-    assert report["checklist_version"] == CHECKLIST_VERSION == "clr-checklist-v1"
-    assert report["total"] == 78
+    assert report["checklist_version"] == CHECKLIST_VERSION == "clr-checklist-v1.1"
+    assert report["total"] == 82
     assert report["hits"] == []
     assert report["skipped"] == []
-    assert report["passed"] == 78
+    assert report["passed"] == 82
 
 
 def test_report_contract_structure_and_accounting():
@@ -413,3 +418,52 @@ def test_run_rgate_is_pure_function():
     r2 = run_rgate(cap)
     assert cap == snapshot, "run_rgate 不得改写入参"
     assert r1 == r2, "同一输入必须得到同一报告（纯函数）"
+
+
+# ---------------------------------------------------------------------------
+# v1.1 追加：hook 隐蔽性族（SPEC-E4 J2，《hook 层专项方案》§六-2）
+# ---------------------------------------------------------------------------
+
+def test_hook_entries_exist_and_id_prefix():
+    hook = {c.id: c for c in CHECKLIST_V1 if c.id.startswith("CLR-HOOK-")}
+    assert set(hook) == {"CLR-HOOK-01", "CLR-HOOK-02", "CLR-HOOK-03", "CLR-HOOK-04"}
+    for c in hook.values():
+        assert c.layers and all(l.startswith("hook_stealth.") for l in c.layers)
+
+
+def test_hook_entries_source_all_tishen():
+    hook = [c for c in CHECKLIST_V1 if c.id.startswith("CLR-HOOK-")]
+    assert all(c.source == "tishen" for c in hook), "HOOK 族须全标 tishen 自研"
+
+
+def test_tishen_quota_9_to_13():
+    tishen_ids = {c.id for c in CHECKLIST_V1 if c.source == "tishen"}
+    assert len(tishen_ids) == 13  # 出厂 9 项 + v1.1 HOOK 4 项
+    assert {"CLR-HOOK-01", "CLR-HOOK-02", "CLR-HOOK-03", "CLR-HOOK-04"} <= tishen_ids
+
+
+def test_checklist_version_v1_1():
+    report = run_rgate(clean_capture())
+    assert CHECKLIST_VERSION == "clr-checklist-v1.1"
+    assert report["checklist_version"] == "clr-checklist-v1.1"
+
+
+def test_hook_checks_hit_on_stealth_failure():
+    cap = clean_capture()
+    cap["hook_stealth"]["fn_to_string_native"] = False
+    cap["hook_stealth"]["error_stack_has_tishen_frame"] = True
+    cap["hook_stealth"]["main_world_runtime_id_reachable"] = True
+    cap["hook_stealth"]["loopback_resource_entries"] = [
+        "http://127.0.0.1:9123/beacon"]
+    report = run_rgate(cap)
+    assert {"CLR-HOOK-01", "CLR-HOOK-02", "CLR-HOOK-03", "CLR-HOOK-04"} \
+        <= hit_ids(report)
+
+
+def test_hook_checks_skipped_when_fields_missing():
+    cap = clean_capture()
+    del cap["hook_stealth"]
+    report = run_rgate(cap)
+    hook_ids = {"CLR-HOOK-01", "CLR-HOOK-02", "CLR-HOOK-03", "CLR-HOOK-04"}
+    assert hook_ids <= skip_ids(report)
+    assert not (hook_ids & hit_ids(report)), "字段缺失不得计命中"
