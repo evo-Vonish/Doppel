@@ -6,6 +6,7 @@ python -m 独立运行冒烟。
 """
 
 import json
+import os
 import socket
 import sqlite3
 import stat
@@ -19,6 +20,11 @@ import pytest
 from tishen.observ.hook_bus import (
     BUS_EVIDENCE_REF, HOOK_EVIDENCE_REF, BusConfig, HookBus,
 )
+
+# 子进程（python -m）不继承 pytest 的 sys.path 注入——显式传 PYTHONPATH，
+# 保证无环境预设的干净 shell 下可复现（验收环境即如此）。
+_CORE_DIR = os.fspath(__import__("pathlib").Path(__file__).resolve().parents[1])
+_SUBPROC_ENV = {**os.environ, "PYTHONPATH": _CORE_DIR}
 
 
 def _msg(**event_kw):
@@ -203,7 +209,7 @@ def test_close_cleans_up_socket(tmp_path):
 # ── python -m 独立运行冒烟 ─────────────────────────────────────────────────
 def test_module_runnable_help():
     proc = subprocess.run([sys.executable, "-m", "tishen.observ.hook_bus", "--help"],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, env=_SUBPROC_ENV)
     assert proc.returncode == 0
     assert "--socket" in proc.stdout and "--events-db" in proc.stdout
 
@@ -214,7 +220,8 @@ def test_module_end_to_end_over_socket(tmp_path):
     db = tmp_path / "events.db"
     proc = subprocess.Popen(
         [sys.executable, "-m", "tishen.observ.hook_bus",
-         "--socket", str(sock), "--events-db", str(db)])
+         "--socket", str(sock), "--events-db", str(db)],
+        env=_SUBPROC_ENV)
     try:
         deadline = time.monotonic() + 5
         while not sock.exists() and time.monotonic() < deadline:
