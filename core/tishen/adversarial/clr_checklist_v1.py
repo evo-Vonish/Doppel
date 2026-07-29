@@ -1,7 +1,9 @@
-"""CLR 跨层一致性清单 v1（SPEC-M4 §3，清单版本 clr-checklist-v1）。
+"""CLR 跨层一致性清单 v1.1（SPEC-M4 §3 + SPEC-E4 J2，清单版本 clr-checklist-v1.1）。
 
-78 条断言，id 前缀分组配额：UA 10 / TZ 8 / SCR 8 / GPU 10 / FONT 6 /
-HW 6 / BOT 10 / FEAT 8 / NET 6 / NOISE 6。每条标注五选一来源
+82 条断言，id 前缀分组配额：UA 10 / TZ 8 / SCR 8 / GPU 10 / FONT 6 /
+HW 6 / BOT 10 / FEAT 8 / NET 6 / NOISE 6 / HOOK 4（v1.1 追加 hook 隐蔽性族，
+《hook 层专项方案》§六-2，source 均标 tishen——TISHEN 自研项 9→13）。
+每条标注五选一来源
 （creepjs / sannysoft / browserleaks / incolumitas / tishen）：
 - creepjs      ：CreepJS lies 思想（多路径读值不一致、列表被改写的痕迹、resistance 模式）；
 - sannysoft    ：bot.sannysoft.com 红项（webdriver、CDP 痕迹、headless UA、空 languages 等）；
@@ -1157,7 +1159,52 @@ def _noise06(capture):
 
 
 # ---------------------------------------------------------------------------
-# 清单本体（78 条；配额 UA10/TZ8/SCR8/GPU10/FONT6/HW6/BOT10/FEAT8/NET6/NOISE6）
+# hook 隐蔽性族（CLR-HOOK-*，4 条；SPEC-E4 J2《hook 层专项方案》§六-2，
+# source 全标 tishen；字段路径 hook_stealth.*，由探针对 hook 包装层自检采集）
+# ---------------------------------------------------------------------------
+
+def _hook01(capture):
+    vals = _need(capture, "hook_stealth.fn_to_string_native")
+    if vals is None:
+        return None
+    v = vals[0]
+    if v is not True:
+        return {"hook_stealth.fn_to_string_native": v}
+    return "pass"
+
+
+def _hook02(capture):
+    vals = _need(capture, "hook_stealth.error_stack_has_tishen_frame")
+    if vals is None:
+        return None
+    v = vals[0]
+    if v is not False:
+        return {"hook_stealth.error_stack_has_tishen_frame": v}
+    return "pass"
+
+
+def _hook03(capture):
+    vals = _need(capture, "hook_stealth.main_world_runtime_id_reachable")
+    if vals is None:
+        return None
+    v = vals[0]
+    if v is not False:
+        return {"hook_stealth.main_world_runtime_id_reachable": v}
+    return "pass"
+
+
+def _hook04(capture):
+    vals = _need(capture, "hook_stealth.loopback_resource_entries")
+    if vals is None:
+        return None
+    entries = vals[0]
+    if not isinstance(entries, list) or entries:
+        return {"hook_stealth.loopback_resource_entries": entries}
+    return "pass"
+
+
+# ---------------------------------------------------------------------------
+# 清单本体（82 条；配额 UA10/TZ8/SCR8/GPU10/FONT6/HW6/BOT10/FEAT8/NET6/NOISE6/HOOK4）
 # ---------------------------------------------------------------------------
 
 CHECKLIST_V1: list[ClrCheck] = [
@@ -1432,4 +1479,21 @@ CHECKLIST_V1: list[ClrCheck] = [
              "canvas 双读间隔须在 [1200, 60000]ms 内（探针契约要求双读间隔≥1200ms；"
              "过小说明双读形同虚设，过大说明上报被伪造）",
              "minor", _noise06),
+    # ---- hook 隐蔽性族（v1.1 追加，《hook 层专项方案》§六-2）----
+    ClrCheck("CLR-HOOK-01", ["hook_stealth.fn_to_string_native"], "tishen",
+             "包装函数 fn.toString() 须含 \"[native code]\"（包装函数伪装检查；"
+             "返回真实源码即 hook 暴露）",
+             "critical", _hook01),
+    ClrCheck("CLR-HOOK-02", ["hook_stealth.error_stack_has_tishen_frame"], "tishen",
+             "Error().stack 不得含 tishen_hook 帧（stack 清洗检查；"
+             "出现 tishen_hook 帧即注入脚本在调用栈留痕）",
+             "critical", _hook02),
+    ClrCheck("CLR-HOOK-03", ["hook_stealth.main_world_runtime_id_reachable"], "tishen",
+             "document 不得有扩展注入痕迹：chrome.runtime.id 在 MAIN world 不可达"
+             "（页面主世界能摸到扩展 id 即扩展面泄露）",
+             "critical", _hook03),
+    ClrCheck("CLR-HOOK-04", ["hook_stealth.loopback_resource_entries"], "tishen",
+             "performance.getEntriesByType(\"resource\") 不得出现 localhost/回环"
+             "异常条目（回传通道零网络面检查；出现即回传通道在资源计时面留痕）",
+             "major", _hook04),
 ]
