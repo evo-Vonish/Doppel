@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Tishen Hook",
+  "version": "0.1.0",
+  "description": "Tishen E-III observation hook (observe-only, no page intervention).",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["tishen_hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["bridge.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED",
+      "all_frames": true
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["nativeMessaging", "storage"],
+  "host_permissions": []
+}
