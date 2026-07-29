@@ -334,6 +334,37 @@ def step7_observability(monitor_pcap: str) -> None:
         log("MONITOR_PCAP=0：跳过抓包守护（keylog 仍随 Chrome 启动注入）")
 
 
+# ── 第 7.6 步：判别引擎守护（SPEC-E §8，观测守护之后的纯增量加挂）──────────
+# 不改既有十段 BOOT_MARK 打点：本段只挂后台进程，不新增段名。
+ENGINE_EVENTS_DB = "/persona/logs/events/events.db"  # 观测守护落库路径（M3 契约）
+
+
+def _engine_available() -> bool:
+    """引擎可用性自检：tishen.engine.daemon 可导入且接口齐全才允许启动。"""
+    try:
+        from tishen.engine import daemon as engine_daemon
+    except ImportError:
+        return False
+    return all(hasattr(engine_daemon, attr)
+               for attr in ("EngineConfig", "EngineDaemon", "main"))
+
+
+def step7_6_engine(persona) -> None:
+    """加挂 engine daemon（后台进程组同观测守护）。
+
+    自检失败时降级跳过（日志注明，不阻塞 bake）——判别引擎是增强层，
+    观测与流链路不得被其缺失拖死（SPEC-E §8）。
+    """
+    if not _engine_available():
+        log("判别引擎自检失败（tishen.engine.daemon 不可用），降级跳过引擎守护，bake 继续")
+        return
+    spawn("engine",
+          [sys.executable, "-m", "tishen.engine.daemon",
+           "--persona-id", persona.meta.id,
+           "--events-db", ENGINE_EVENTS_DB],
+          "判别引擎守护（E1/E2 标注 + E3 评级回写）")
+
+
 # ── 第 7.5 步：neko 流服务（M2，SPEC-M2M3 §1.2）─────────────────────────────
 # 在 fcitx5 之后、Chrome 之前受监督启动 neko server：neko 抓虚拟屏推 WebRTC 流并回注输入，
 # 不接管 Chrome 生命周期（M2 方案 §二.2）。
@@ -412,6 +443,7 @@ def _shutdown(signum, _frame) -> None:
     log(f"收到信号 {signum}，按序收尾")
     _terminate("chrome")
     _terminate("neko")
+    _terminate("engine")
     _terminate("fcitx5")
     _terminate("observability")
     _terminate("xorg")
@@ -452,6 +484,7 @@ def main() -> None:
     _boot_mark("fcitx5")
     step7_observability(monitor_pcap)
     _boot_mark("observ")
+    step7_6_engine(persona)  # SPEC-E §8：观测守护之后加挂引擎守护（失败降级跳过）
     step7_5_neko()
     _boot_mark("neko")
 
@@ -478,8 +511,9 @@ def main() -> None:
         fail(f"启动 Chrome 失败：{exc}")
     _boot_mark("chrome_launch")  # Chrome 已拉起（SPEC-M5 §5 末段）
     rc = _CHILDREN["chrome"].wait()
-    log(f"Chrome 退出（rc={rc}），按序收尾后台进程（neko → fcitx5 → 观测守护）")
+    log(f"Chrome 退出（rc={rc}），按序收尾后台进程（neko → 引擎守护 → fcitx5 → 观测守护）")
     _terminate("neko")
+    _terminate("engine")
     _terminate("fcitx5")
     _terminate("observability")
     _terminate("xorg")
