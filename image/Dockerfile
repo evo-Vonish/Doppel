@@ -105,6 +105,32 @@ COPY image/entrypoint/ /opt/tishen/entrypoint/
 COPY image/config/ /opt/tishen/config/
 COPY image/scripts/ /opt/tishen/scripts/
 
+# E-IV 件一（I2）：hook 层资产预置（tishen_hook.js / ext / native host + manifest 模板），
+# MV3 hook 扩展目录供 --load-extension 加载；纯增量，既有层零改动
+COPY image/hook/ /opt/tishen/hook/
+COPY image/hook/ext/ /opt/tishen/hook-ext/
+
+# E-IV 件一（I2）：扩展 key 构建期一次性生成（独立缓存层，openssl 镜像已有不新装包）。
+# MV3 扩展 id 由 manifest key 派生——key 固定则 id 恒定，native manifest 的
+# allowed_origins 由 persona_bake 运行时从本 key 计算注入（G 遗留①/②）。
+RUN chmod 755 /opt/tishen/hook/tishen_native_host.py \
+    && openssl genrsa -out /opt/tishen/hook/ext-key.pem 2048 \
+    && chmod 600 /opt/tishen/hook/ext-key.pem \
+    && PUBKEY="$(openssl rsa -in /opt/tishen/hook/ext-key.pem -pubout -outform DER 2>/dev/null | base64 -w0)" \
+    && python3 - "$PUBKEY" <<'PYEOF'
+import json
+import sys
+
+path = "/opt/tishen/hook-ext/manifest.json"
+with open(path, encoding="utf-8") as fh:
+    manifest = json.load(fh)
+# MV3 key 字段 = public key DER 的 base64（chrome 据此派生恒定扩展 id）
+manifest["key"] = sys.argv[1]
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(manifest, fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
+PYEOF
+
 # 拷贝并安装 tishen core 包（由 core 分支提供；--no-deps 遵守依赖白名单纪律）。
 # 烘焙器在容器内复用 tishen.persona / tishen.linter 做 schema 校验与 linter 门禁复验（SPEC §6 第 1 步）。
 # 兼容 PEP 668 的 Ubuntu 24.04：优先常规安装，失败时回退 --break-system-packages（容器内单用户环境，可接受）。
