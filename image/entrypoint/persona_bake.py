@@ -15,6 +15,7 @@ neko 只负责抓屏推流与输入回注，不接管 Chrome 生命周期（避�
 """
 
 import argparse
+import hashlib
 import os
 import re
 import shlex
@@ -22,6 +23,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 # tishen core 包由镜像层 pip 安装（与 Coder B 的接口点，签名按 SPEC §3.1/§2 固定）
@@ -373,6 +375,10 @@ HOOK_EXT_DIR = "/opt/tishen/hook-ext"            # MV3 hook 扩展目录（镜�
 HOOK_NATIVE_HOST = "/opt/tishen/hook/tishen_native_host.py"   # 镜像内绝对路径
 HOOK_NATIVE_MANIFEST_TEMPLATE = "/opt/tishen/hook/tishen_native_host.json"
 HOOK_NATIVE_MANIFEST_DIR = "~/.config/chromium/NativeMessagingHosts"
+# E-IV 件一（I1）：native host argv 包装脚本（manifest path 不能带参数，
+# persona_id/session_id 固化进脚本体）；扩展 key 入镜像（I2），扩展 id 由 key 派生即恒定
+HOOK_WRAPPER = "/run/tishen/native-host-wrapper.sh"
+HOOK_EXT_KEY = "/opt/tishen/hook/ext-key.pem"
 
 
 def _hook_bus_available() -> bool:
@@ -385,8 +391,63 @@ def _hook_bus_available() -> bool:
                for attr in ("BusConfig", "HookBus", "main"))
 
 
+def _session_id() -> str:
+    """当次会话 id：容器启动一次 = 一个会话（SPEC-M2M3 事件 schema 口径）。
+
+    优先复用环境注入的 TISHEN_SESSION_ID（与观测守护同源），缺失时按本次
+    启动生成随机 uuid 并回写环境，保证同次启动内各组件一致。
+    """
+    sid = os.environ.get("TISHEN_SESSION_ID", "").strip()
+    if not sid:
+        sid = uuid.uuid4().hex
+        os.environ["TISHEN_SESSION_ID"] = sid
+    return sid
+
+
+def _write_native_host_wrapper(persona, session_id: str) -> str | None:
+    """生成 native host argv 包装脚本（SPEC-E4 §件一 I1，G 遗留②）。
+
+    chrome native messaging manifest 的 path 不能带参数，故把
+    --persona-id/--session-id/--socket/--payload-log 固化进脚本体，
+    0700 权限，exec 转发 stdio（"$@" 保留 chrome 附加参数透传位）。
+    成功返回包装脚本路径；任何失败记日志返回 None（降级，不阻塞 bake）。
+    """
+    argv = [HOOK_NATIVE_HOST,
+            "--persona-id", persona.meta.id,
+            "--session-id", session_id,
+            "--socket", HOOK_SOCKET,
+            "--payload-log", HOOK_PAYLOAD_LOG]
+    body = ("#!/bin/sh\n"
+            "# 由 persona_bake 当次启动生成（E-IV I1）：persona_id/session_id 已固化，"
+            "请勿手工编辑\n"
+            "exec " + " ".join(shlex.quote(a) for a in argv) + ' "$@"\n')
+    try:
+        wrapper = Path(HOOK_WRAPPER)
+        wrapper.parent.mkdir(parents=True, exist_ok=True)
+        wrapper.write_text(body, encoding="utf-8")
+        wrapper.chmod(0o700)
+    except OSError as exc:
+        log(f"native host 包装脚本生成失败（{exc}），降级跳过（manifest 将直连 host 路径），bake 继续")
+        return None
+    log(f"native host 包装脚本已生成：{HOOK_WRAPPER}（0700，persona_id={persona.meta.id}，session_id={session_id}）")
+    return str(wrapper)
+
+
+def _extension_id(key_path: str) -> str:
+    """由 MV3 扩展 manifest key（RSA）派生 chrome 扩展 id（SPEC-E4 §件一 I1，G 遗留①）。
+
+    chrome 算法：public key DER 的 sha256 前 16 字节，每字节高低半字节各按 a–p 映射，
+    共 32 字符。计算失败（key 缺失/openssl 异常）抛异常，由调用方降级处理。
+    """
+    proc = subprocess.run(
+        ["openssl", "rsa", "-in", key_path, "-pubout", "-outform", "DER"],
+        capture_output=True, check=True)
+    digest = hashlib.sha256(proc.stdout).digest()[:16]
+    return "".join(chr(ord("a") + (b >> 4)) + chr(ord("a") + (b & 0xF)) for b in digest)
+
+
 def step7_7_hook(persona) -> None:
-    """加挂 JS hook 事件总线 + Chrome 扩展/native manifest（SPEC-E3 §2.3）。
+    """加挂 JS hook 事件总线 + Chrome 扩展/native manifest（SPEC-E3 §2.3，E-IV I1）。
 
     降级纪律同引擎守护：hook 层是观测增强，任何缺失/失败只记日志跳过，
     绝不阻塞 bake（观测与流链路不得被其缺失拖死）。
@@ -406,20 +467,34 @@ def step7_7_hook(persona) -> None:
         except OSError as exc:
             log(f"hook 总线启动失败（{exc}），降级跳过，bake 继续")
 
-    # native messaging manifest 落位（SPEC-E3 §2.2/§2.3，HOST_PATH 用镜像内绝对路径）
+    # native messaging manifest 落位（SPEC-E3 §2.2/§2.3 + SPEC-E4 §件一 I1）：
+    # HOST_PATH 指向 argv 包装脚本（生成失败降级直连 host 路径）；
+    # __EXT_ID__ 由镜像内扩展 key 派生（计算失败降级保留占位）
+    session_id = _session_id()
     manifest_dir = Path(os.path.expanduser(HOOK_NATIVE_MANIFEST_DIR))
     manifest_path = manifest_dir / "tishen_native_host.json"
     if _DRY_RUN:
-        log(f"[dry-run] 将安装 native manifest → {manifest_path}（HOST_PATH={HOOK_NATIVE_HOST}）")
+        log(f"[dry-run] 将生成 native host 包装脚本 → {HOOK_WRAPPER}"
+            f"（0700，persona_id={persona.meta.id}，session_id={session_id}）")
+        log(f"[dry-run] 将安装 native manifest → {manifest_path}（HOST_PATH={HOOK_WRAPPER}，"
+            f"EXT_ID 由 {HOOK_EXT_KEY} 派生）")
         return
+    host_path = _write_native_host_wrapper(persona, session_id) or HOOK_NATIVE_HOST
+    try:
+        ext_id = _extension_id(HOOK_EXT_KEY)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        log(f"扩展 id 计算失败（{exc}），manifest 保留 __EXT_ID__ 占位符，降级继续")
+        ext_id = None
     try:
         template = Path(HOOK_NATIVE_MANIFEST_TEMPLATE).read_text(encoding="utf-8")
-        rendered = template.replace("__HOST_PATH__", HOOK_NATIVE_HOST)
+        rendered = template.replace("__HOST_PATH__", host_path)
+        if ext_id is not None:
+            rendered = rendered.replace("__EXT_ID__", ext_id)
         manifest_dir.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(rendered, encoding="utf-8")
-        log(f"native messaging manifest 已落位：{manifest_path}")
+        log(f"native messaging manifest 已落位：{manifest_path}（HOST_PATH={host_path}）")
         if "__EXT_ID__" in rendered:
-            log("提示：manifest 仍含 __EXT_ID__ 占位符，扩展 id 由 hook 扩展 key 确定后更新（H 侧契约）")
+            log("提示：manifest 仍含 __EXT_ID__ 占位符，请检查扩展 key（I2）是否入镜像")
     except OSError as exc:
         log(f"native manifest 落位失败（{exc}），降级跳过，bake 继续")
 
