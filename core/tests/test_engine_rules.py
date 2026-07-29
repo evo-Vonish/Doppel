@@ -246,3 +246,65 @@ def test_download_failure_raises_runtime_error(tmp_path):
     with pytest.raises(RuntimeError):
         easyprivacy.download(tmp_path / "dl",
                              url=(tmp_path / "missing.txt").as_uri())
+
+
+# ---------- 回归：path_pattern 参与匹配 + third-party 过滤（验收修复） ----------
+
+@pytest.fixture()
+def path_conn(conn):
+    _import(conn, [
+        "||tracker.net^/pixel.gif$third-party",
+        "||ads.example.com^",
+        "@@||ads.example.com^/whitelisted.js",
+        "||fp-only.example.com/a*^$~third-party",
+    ])
+    return conn
+
+
+def test_regression_anchored_path_hit(path_conn):
+    res = match_url(path_conn, "https://tracker.net/pixel.gif", "foo.com")
+    assert res.hit and not res.exception
+    assert res.raw == "||tracker.net^/pixel.gif$third-party"
+
+
+def test_regression_anchored_path_miss_other_path(path_conn):
+    assert match_url(path_conn, "https://tracker.net/other.gif",
+                     "foo.com").hit is False
+
+
+def test_regression_exception_with_path_releases_only_that_path(path_conn):
+    """例外带 path：只放行指定 path，同 host 其他 path 仍 block（§2.2 ②）。"""
+    res = match_url(path_conn, "https://ads.example.com/whitelisted.js", "x.com")
+    assert res.hit and res.exception
+    res2 = match_url(path_conn, "https://ads.example.com/other.js", "x.com")
+    assert res2.hit and not res2.exception
+    assert res2.raw == "||ads.example.com^"
+
+
+def test_regression_third_party_hit_only_on_third_party(path_conn):
+    """tp=1 仅第三方命中（§2.2 ③，末两段注册域名近似判定）。"""
+    assert match_url(path_conn, "https://tracker.net/pixel.gif", "foo.com").hit
+    assert match_url(path_conn, "https://tracker.net/pixel.gif",
+                     "sub.tracker.net").hit is False
+
+
+def test_regression_first_party_modifier_hit_only_on_first_party(path_conn):
+    """tp=0（$~third-party）仅第一方命中。"""
+    assert match_url(path_conn, "https://fp-only.example.com/abc", "fp-only.example.com").hit
+    assert match_url(path_conn, "https://fp-only.example.com/abc", "else.com").hit is False
+
+
+def test_regression_third_party_none_page_treated_as_third(path_conn):
+    assert match_url(path_conn, "https://tracker.net/pixel.gif", None).hit
+
+
+def test_regression_match_url_does_not_touch_conn_row_factory(path_conn):
+    """match_url 不得污染调用方共享连接的 row_factory（Wave2 复用 conn）。"""
+    match_url(path_conn, "https://tracker.net/pixel.gif", "foo.com")
+    assert path_conn.row_factory is None
+
+
+def test_regression_parse_strips_leading_separator_in_path_pattern():
+    rules, _ = parse_abp_lines(["||tracker.net^/pixel.gif$third-party"],
+                               source="easyprivacy")
+    assert rules[0].path_pattern == "/pixel.gif"
