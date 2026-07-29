@@ -206,8 +206,20 @@ class EngineDaemon:
                         " VALUES (?, ?, ?)",
                         (hit.entity, reg_page, ev.ts))
 
+        # 分桶实体优先取脚本属主（actor host）：同一 actor 的外发 request
+        # 指向第三方域，若按 target_host 归桶会把 fp.exfil_to_third 所需
+        # 证据拆出桶外（与 §7-3 "actor_script 或 entity" 口径一致）。
+        actor_host = _host_of_actor(ev.actor_script)
+        actor_hit: EntityHit | None = None
+        if actor_host and actor_host != host:
+            actor_hit = attribute(self._tracker, actor_host, page_host)
+        elif actor_host:
+            actor_hit = hit
+        bucket_entity = (actor_hit.entity if actor_hit and actor_hit.entity
+                         else (hit.entity if hit else None))
+
         return {"event": ev, "page_host": page_host, "host": host,
-                "hit": hit, "entity": hit.entity if hit else None}
+                "hit": hit, "actor_hit": actor_hit, "entity": bucket_entity}
 
     # ---- 第 3 步：窗口聚合 -------------------------------------------------
 
@@ -269,10 +281,15 @@ class EngineDaemon:
             evts: list[Event] = bucket["events"]
             entity_fp_invasive = False
             if entity:
-                # 桶内任一命中记录 is_fp_invasive 即可（同实体判定一致）
+                # 桶内任一命中记录 is_fp_invasive 即可（同实体判定一致）；
+                # 优先脚本属主命中（actor_hit），退回 target_host 命中
                 entity_fp_invasive = any(
-                    rec["hit"] is not None and rec["hit"].is_fp_invasive
-                    and rec["hit"].entity == entity for rec in records)
+                    (rec["actor_hit"] is not None
+                     and rec["actor_hit"].is_fp_invasive
+                     and rec["actor_hit"].entity == entity)
+                    or (rec["hit"] is not None and rec["hit"].is_fp_invasive
+                        and rec["hit"].entity == entity)
+                    for rec in records)
             scored = score_fingerprinting(
                 evts, entity_fp_invasive=entity_fp_invasive,
                 window_ms=self.config.window_ms)
