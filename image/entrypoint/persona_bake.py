@@ -365,6 +365,65 @@ def step7_6_engine(persona) -> None:
           "判别引擎守护（E1/E2 标注 + E3 评级回写）")
 
 
+# ── 第 7.7 步：JS hook 层（SPEC-E3 §2.3，引擎守护之后的纯增量加挂）──────────
+# 不改既有十段 BOOT_MARK 打点：本段只挂后台进程与落配置文件，不新增段名。
+HOOK_SOCKET = "/persona/logs/hook.sock"          # 总线收流 socket（SPEC-E3 §0）
+HOOK_PAYLOAD_LOG = "/persona/logs/hook/samples.jsonl"  # payload_sample JSONL 落盘
+HOOK_EXT_DIR = "/opt/tishen/hook-ext"            # MV3 hook 扩展目录（镜像内固化）
+HOOK_NATIVE_HOST = "/opt/tishen/hook/tishen_native_host.py"   # 镜像内绝对路径
+HOOK_NATIVE_MANIFEST_TEMPLATE = "/opt/tishen/hook/tishen_native_host.json"
+HOOK_NATIVE_MANIFEST_DIR = "~/.config/chromium/NativeMessagingHosts"
+
+
+def _hook_bus_available() -> bool:
+    """hook 总线自检：tishen.observ.hook_bus 可导入且接口齐全才允许启动。"""
+    try:
+        from tishen.observ import hook_bus
+    except ImportError:
+        return False
+    return all(hasattr(hook_bus, attr)
+               for attr in ("BusConfig", "HookBus", "main"))
+
+
+def step7_7_hook(persona) -> None:
+    """加挂 JS hook 事件总线 + Chrome 扩展/native manifest（SPEC-E3 §2.3）。
+
+    降级纪律同引擎守护：hook 层是观测增强，任何缺失/失败只记日志跳过，
+    绝不阻塞 bake（观测与流链路不得被其缺失拖死）。
+    """
+    hook_argv = [sys.executable, "-m", "tishen.observ.hook_bus",
+                 "--socket", HOOK_SOCKET, "--events-db", ENGINE_EVENTS_DB]
+    hook_line = " ".join(shlex.quote(a) for a in hook_argv)
+    if _DRY_RUN:
+        log(f"[dry-run] 将后台启动：{hook_line}（JS hook 事件总线；失败降级跳过）")
+    elif not _hook_bus_available():
+        log("hook 总线自检失败（tishen.observ.hook_bus 不可用），降级跳过，bake 继续")
+    else:
+        try:
+            Path("/persona/logs/hook").mkdir(parents=True, exist_ok=True)
+            _CHILDREN["hook_bus"] = subprocess.Popen(hook_argv)
+            log(f"JS hook 事件总线已启动（pid={_CHILDREN['hook_bus'].pid}，socket={HOOK_SOCKET}）")
+        except OSError as exc:
+            log(f"hook 总线启动失败（{exc}），降级跳过，bake 继续")
+
+    # native messaging manifest 落位（SPEC-E3 §2.2/§2.3，HOST_PATH 用镜像内绝对路径）
+    manifest_dir = Path(os.path.expanduser(HOOK_NATIVE_MANIFEST_DIR))
+    manifest_path = manifest_dir / "tishen_native_host.json"
+    if _DRY_RUN:
+        log(f"[dry-run] 将安装 native manifest → {manifest_path}（HOST_PATH={HOOK_NATIVE_HOST}）")
+        return
+    try:
+        template = Path(HOOK_NATIVE_MANIFEST_TEMPLATE).read_text(encoding="utf-8")
+        rendered = template.replace("__HOST_PATH__", HOOK_NATIVE_HOST)
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(rendered, encoding="utf-8")
+        log(f"native messaging manifest 已落位：{manifest_path}")
+        if "__EXT_ID__" in rendered:
+            log("提示：manifest 仍含 __EXT_ID__ 占位符，扩展 id 由 hook 扩展 key 确定后更新（H 侧契约）")
+    except OSError as exc:
+        log(f"native manifest 落位失败（{exc}），降级跳过，bake 继续")
+
+
 # ── 第 7.5 步：neko 流服务（M2，SPEC-M2M3 §1.2）─────────────────────────────
 # 在 fcitx5 之后、Chrome 之前受监督启动 neko server：neko 抓虚拟屏推 WebRTC 流并回注输入，
 # 不接管 Chrome 生命周期（M2 方案 §二.2）。
@@ -409,6 +468,8 @@ def build_chrome_argv(persona, gpu_vendor: str) -> list[str]:
     else:
         argv += ["--use-gl=angle", "--use-angle=gl"]
     argv += ["--no-first-run", "--no-default-browser-check", "--ozone-platform=x11"]
+    # SPEC-E3 §2.3：加载 MV3 hook 扩展（镜像内固化目录；缺失时 Chrome 仅告警不拒启）
+    argv.append(f"--load-extension={HOOK_EXT_DIR}")
     return argv
 
 
@@ -444,6 +505,7 @@ def _shutdown(signum, _frame) -> None:
     _terminate("chrome")
     _terminate("neko")
     _terminate("engine")
+    _terminate("hook_bus")
     _terminate("fcitx5")
     _terminate("observability")
     _terminate("xorg")
@@ -485,6 +547,7 @@ def main() -> None:
     step7_observability(monitor_pcap)
     _boot_mark("observ")
     step7_6_engine(persona)  # SPEC-E §8：观测守护之后加挂引擎守护（失败降级跳过）
+    step7_7_hook(persona)  # SPEC-E3 §2.3：引擎守护之后加挂 JS hook 层（失败降级跳过）
     step7_5_neko()
     _boot_mark("neko")
 
@@ -514,6 +577,7 @@ def main() -> None:
     log(f"Chrome 退出（rc={rc}），按序收尾后台进程（neko → 引擎守护 → fcitx5 → 观测守护）")
     _terminate("neko")
     _terminate("engine")
+    _terminate("hook_bus")
     _terminate("fcitx5")
     _terminate("observability")
     _terminate("xorg")
