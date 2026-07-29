@@ -121,7 +121,11 @@ def test_handle_event_writes_socket_line(tmp_path):
                                   session_id="s1", writer=writer,
                                   payload_log=str(tmp_path / "s.jsonl"))
     assert receipt == {"ok": True}
-    out = json.loads(writer.lines[0])
+    # 总线协议包装（SPEC-E3 §1 同构：{v,type,event}）——裸事件会被
+    # hook_bus 按 dropped:type 丢弃，此处锁定包装形态防回归。
+    wrapper = json.loads(writer.lines[0])
+    assert wrapper["v"] == 1 and wrapper["type"] == "event"
+    out = wrapper["event"]
     assert out["summary"].startswith("[sampled] ")
     assert out["persona_id"] == "p1" and out["session_id"] == "s1"
     assert out["event_type"] == "wasm_load"  # 其余字段原样
@@ -224,9 +228,11 @@ def test_host_subprocess_end_to_end(tmp_path):
         deadline = time.monotonic() + 5
         while not received and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert received[0]["summary"].startswith("[late] ")
-        assert received[0]["persona_id"] == "p_e2e"
-        assert received[0]["session_id"] == "sess-e2e"
+        assert received[0]["type"] == "event" and received[0]["v"] == 1
+        ev = received[0]["event"]
+        assert ev["summary"].startswith("[late] ")
+        assert ev["persona_id"] == "p_e2e"
+        assert ev["session_id"] == "sess-e2e"
     finally:
         proc.terminate()
         proc.wait(timeout=10)

@@ -129,7 +129,10 @@ def handle_message(msg: dict, *, persona_id: str, session_id: str,
             return {"ok": False, "error": "event 字段缺失或不是对象"}
         out = translate_event(event, persona_id, session_id)
         try:
-            writer.send_line(json.dumps(out, ensure_ascii=False))
+            # 总线协议与 §1 页面协议同构（{v,type,event} 包装）——裸事件
+            # 会被 hook_bus 按 dropped:type 丢弃（串通冒烟教训）。
+            writer.send_line(json.dumps(
+                {"v": 1, "type": "event", "event": out}, ensure_ascii=False))
         except OSError as exc:
             return {"ok": False, "error": f"hook.sock 写入失败：{exc}"}
         return {"ok": True}
