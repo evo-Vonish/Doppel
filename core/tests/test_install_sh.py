@@ -134,8 +134,11 @@ def injected(tmp_path: Path) -> dict:
 def test_dry_run_supported_distros(distro: str, pkg_cmd: str, injected: dict) -> None:
     Path(injected["DOPPEL_OS_RELEASE"]).write_text(OS_RELEASE_FIXTURES[distro])
     # 显式构造"未装 Docker"（CI runner 预装 docker 会走"已装跳过"分支
-    # 而断言期待代装命令——环境显式化，同 test_api 修复纪律）。
-    env = {**injected, "DOPPEL_FORCE_NO_DOCKER": "1"}
+    # 而断言期待代装命令——环境显式化，同 test_api 修复纪律）；
+    # 目标用户固定为不在 docker 组的测试账号（CI runner 已在 docker 组
+    # 会跳过 usermod/newgrp 话术分支）。
+    env = {**injected, "DOPPEL_FORCE_NO_DOCKER": "1",
+           "DOPPEL_TARGET_USER": "doppel-test-user"}
     result = run_sh(INSTALL_SH, ["--dry-run"], env)
     assert result.returncode == 0, result.stderr
     out = result.stdout

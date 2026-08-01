@@ -48,7 +48,7 @@ SUDO=""
 if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
 ROOT_OK=1
 if [ "$(id -u)" -ne 0 ] && [ -z "$SUDO" ]; then ROOT_OK=0; fi
-TARGET_USER="${SUDO_USER:-${USER:-$(id -un)}}"
+TARGET_USER="${DOPPEL_TARGET_USER:-${SUDO_USER:-${USER:-$(id -un)}}}"  # DOPPEL_TARGET_USER 为测试注入点
 if [ -n "${DOPPEL_PREFIX:-}" ]; then
   PREFIX="$DOPPEL_PREFIX"
 elif [ "$ROOT_OK" -eq 1 ]; then

@@ -55,7 +55,7 @@ ROOT_OK=1
 if [ "$(id -u)" -ne 0 ]; then
   if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else ROOT_OK=0; fi
 fi
-TARGET_USER="${SUDO_USER:-${USER:-$(id -un)}}"
+TARGET_USER="${DOPPEL_TARGET_USER:-${SUDO_USER:-${USER:-$(id -un)}}}"  # DOPPEL_TARGET_USER 为测试注入点（CI runner 已在 docker 组会跳过话术分支）
 
 # 路径解析（测试注入点优先于默认值）
 PREFIX="${DOPPEL_PREFIX:-}"
