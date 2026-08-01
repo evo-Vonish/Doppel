@@ -607,6 +607,9 @@ def step7_7_hook(persona) -> None:
     else:
         try:
             Path("/persona/logs/hook").mkdir(parents=True, exist_ok=True)
+            # named volume 可能残留上轮 socket。必须由父进程先删，再启动总线并等待新
+            # socket；否则权限交接可能命中旧 inode，随后被 hook bus 重建回 root:root。
+            Path(HOOK_SOCKET).unlink(missing_ok=True)
             _CHILDREN["hook_bus"] = subprocess.Popen(hook_argv)
             log(f"JS hook 事件总线已启动（pid={_CHILDREN['hook_bus'].pid}，socket={HOOK_SOCKET}）")
             _handoff_hook_socket()

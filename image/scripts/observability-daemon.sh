@@ -30,6 +30,15 @@ log_event() {
 }
 
 mkdir -p "$PCAP_DIR" "$EVENTS_DIR" || log_event "警告：无法创建日志目录 $PCAP_DIR / $EVENTS_DIR"
+# tcpdump 捕获初始化后会主动降权到镜像内 tcpdump 用户。named volume 初始目录是
+# root:root 0755；若不在启动前交接写权限，抓包已成功打开但首个 ring 文件会失败。
+# 只交接 pcap 子树，events/sslkeys 等观测资产继续维持各自最小权限边界。
+if id tcpdump >/dev/null 2>&1; then
+    chown -R tcpdump:tcpdump "$PCAP_DIR" 2>/dev/null \
+        || log_event "警告：无法把 $PCAP_DIR 交接给 tcpdump 用户，抓包可能降级"
+    chmod 0750 "$PCAP_DIR" 2>/dev/null \
+        || log_event "警告：无法收紧 $PCAP_DIR 权限，抓包可能降级"
+fi
 
 # ---------------------------------------------------------------------------
 # 子进程启动
