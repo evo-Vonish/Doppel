@@ -300,12 +300,14 @@ def step5_display(persona) -> None:
         log(f"[dry-run] 将确保虚拟屏就绪并执行：xrandr --fb {w}x{h} + 输出模式设置（dpr={dpr}）")
     else:
         _ensure_x_server()
-        run_cmd(["xrandr", "--fb", f"{w}x{h}"], "设置帧缓冲分辨率")
         output = _first_output()
         if output is None:
             log("警告：未发现已连接输出，跳过输出模式设置（仅帧缓冲生效）")
         else:
+            # 先缩输出再缩 framebuffer；反序时，小于 dummy 初始模式的 persona
+            # 会被 RandR 以“screen not large enough for output”拒绝。
             _set_output_mode(output, w, h)
+        run_cmd(["xrandr", "--fb", f"{w}x{h}"], "设置帧缓冲分辨率")
     if dpr > 1:
         # Qt 支持小数缩放；GTK(GDK_SCALE) 仅认整数，非整数 dpr 时取整仅供 GTK 应用参考
         os.environ["QT_SCALE_FACTOR"] = str(dpr)
