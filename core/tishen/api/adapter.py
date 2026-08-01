@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import json
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -58,8 +59,13 @@ def events_db_path(persona_id: str, persona: Persona | None = None) -> str:
     if persona is not None:
         candidate = (Path("/var/lib/docker/volumes") / persona.storage.log_volume
                      / "_data" / "events" / "events.db")
-        if candidate.exists():
-            return str(candidate)
+        try:
+            if candidate.exists():
+                return str(candidate)
+        except PermissionError:
+            # /var/lib/docker 对非 root 不可读：exists() 抛错而非返回 False
+            # （CI/ubuntu runner 与真机普通用户同路径）——按不可用回退。
+            pass
     return str(tishen_home() / "events" / f"{persona_id}.db")
 
 
@@ -131,6 +137,24 @@ def _host_of(url: str | None) -> str:
     return urllib.parse.urlparse(url).hostname or ""
 
 
+def parse_engine_tags(raw: str | None) -> list[str]:
+    """events.db 的 engine_tags（JSON 数组字符串）→ 字符串列表（v0.2）。
+
+    判别引擎注入的标签形如 "e2:easyprivacy:<rule_id>" / "e1:entity:<实体名>" /
+    "alert:L<1|2|3>:<mining|fingerprinting>"。非法 JSON / 非数组 → 空数组，
+    不报错（消费侧宽容降级）；元素统一转 str 保证响应形状稳定。
+    """
+    if not raw:
+        return []
+    try:
+        tags = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(tags, list):
+        return []
+    return [str(t) for t in tags]
+
+
 def map_event(e: dict) -> dict:
     """query_events 返回的 18 字段 dict → 前端 ObservEvent 9 字段。"""
     detail = {}
@@ -146,6 +170,7 @@ def map_event(e: dict) -> dict:
         "targetHost": e.get("target_host") or "",
         "summary": e["summary"],
         "alertLevel": e["alert_level"],
+        "engineTags": parse_engine_tags(e.get("engine_tags")),
         "detail": detail,
     }
 
@@ -188,6 +213,7 @@ def derive_alerts(rows: list[dict], acked: set[str]) -> list[dict]:
                     "personaId": e["persona_id"],
                     "host": e.get("target_host") or "",
                     "evidence": [e["evidence_ref"]],
+                    "engineTags": parse_engine_tags(e.get("engine_tags")),
                     "ts": _iso_seconds(e["ts"]),
                     "acknowledged": e["event_id"] in acked,
                 }))

@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
 from datetime import datetime, timedelta, timezone
@@ -38,6 +39,11 @@ _TZ_CN = timezone(timedelta(hours=8))
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("TISHEN_HOME", str(tmp_path))
+    # 显式构造"无 docker"环境（契约语义不依赖宿主是否装有 docker CLI——
+    # CI runner 预装 docker 时 _run 返回非零/目录权限差异会污染断言）。
+    def _no_docker(args):
+        raise FileNotFoundError("docker CLI 不可用（测试显式构造）")
+    monkeypatch.setattr("tishen.docker_ctl._run", _no_docker)
     return TestClient(app)
 
 
@@ -215,9 +221,12 @@ def test_events_mapping_and_filters(client):
     assert [e["ts"] for e in events] == sorted(
         [e["ts"] for e in events], reverse=True)
     e0 = events[0]
-    # 9 字段契约
+    # 10 字段契约（v0.2 增 engineTags）
     assert set(e0) == {"id", "ts", "personaId", "type", "pageHost",
-                       "targetHost", "summary", "alertLevel", "detail"}
+                       "targetHost", "summary", "alertLevel", "engineTags",
+                       "detail"}
+    # 观测层 engine_tags 恒 "[]" → 解析为空数组
+    assert e0["engineTags"] == []
     assert e0["personaId"] == pid
     assert e0["type"] == "request"
     assert e0["pageHost"] == "example.com"
@@ -278,6 +287,70 @@ def test_events_mapping_and_filters(client):
 def test_events_persona_not_found_404(client):
     r = client.get("/api/personas/p_nonexistent_xx/events")
     assert r.status_code == 404
+
+
+def _engine_writeback(persona_id: str, *, engine_tags: str,
+                      alert_level: int = 0) -> None:
+    """模拟判别引擎回写（回写权属引擎，观测层 Event 校验不放行非零/标签注入）。"""
+    db_path = tishen_home() / "events" / f"{persona_id}.db"
+    conn = connect(db_path)
+    try:
+        conn.execute("UPDATE events SET engine_tags = ?, alert_level = ?",
+                     (engine_tags, alert_level))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_events_engine_tags_parsed_and_bad_json(client):
+    """v0.2：ObservEvent.engineTags——合法 JSON 解析为数组，非法 JSON 降级空数组。"""
+    pid = _create(client)["id"]
+    _seed_events(pid)
+    tags = ["e2:easyprivacy:1234", "e1:entity:Google",
+            "alert:L3:mining", "mining.payload_confirmed"]
+    _engine_writeback(pid, engine_tags=json.dumps(tags, ensure_ascii=False))
+    events = client.get(f"/api/personas/{pid}/events").json()
+    assert len(events) == 3
+    for e in events:
+        assert e["engineTags"] == tags
+    # detail 中 engine_tags 仍是平铺原文字符串（两处并存，各司其职）
+    assert json.loads(events[0]["detail"]["engine_tags"]) == tags
+
+    # 非法 JSON → 空数组，不报错
+    _engine_writeback(pid, engine_tags="{不是合法JSON")
+    events = client.get(f"/api/personas/{pid}/events").json()
+    assert all(e["engineTags"] == [] for e in events)
+    # JSON 合法但非数组 → 同样降级空数组
+    _engine_writeback(pid, engine_tags='"e2:easyprivacy:1234"')
+    events = client.get(f"/api/personas/{pid}/events").json()
+    assert all(e["engineTags"] == [] for e in events)
+
+
+def test_alerts_engine_tags_and_bad_json(client):
+    """v0.2：Alert.engineTags——与源事件同源解析；坏数据降级空数组。"""
+    pid = _create(client)["id"]
+    _seed_events(pid)
+    tags = ["e1:entity:CoinHive", "alert:L3:mining"]
+    _engine_writeback(pid, engine_tags=json.dumps(tags, ensure_ascii=False),
+                      alert_level=3)
+    r = client.get("/api/alerts")
+    assert r.status_code == 200
+    alerts = r.json()
+    assert len(alerts) == 3
+    for a in alerts:
+        assert a["level"] == 3
+        assert a["engineTags"] == tags
+    # ack 响应同样携带解析后的 engineTags
+    r = client.post(f"/api/alerts/{alerts[0]['id']}/ack")
+    assert r.status_code == 200
+    assert r.json()["engineTags"] == tags
+    assert r.json()["acknowledged"] is True
+
+    # 坏 JSON → 告警仍在，engineTags 空数组
+    _engine_writeback(pid, engine_tags="[[破损", alert_level=2)
+    alerts = client.get("/api/alerts").json()
+    assert len(alerts) == 3
+    assert all(a["engineTags"] == [] for a in alerts)
 
 
 # ---------------------------------------------------------------------------
