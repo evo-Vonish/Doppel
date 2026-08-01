@@ -5,7 +5,7 @@
 > **The double is running. Nothing hides.**
 > Run the web inside an isolated double of yourself — and watch everything the web tries to do to it.
 
-[![tests](https://img.shields.io/badge/pytest-479%20passed-brightgreen)](#-quality-baseline) [![node tests](https://img.shields.io/badge/node--test-25%20passed-brightgreen)](#-quality-baseline) [![python](https://img.shields.io/badge/python-3.11%2B-blue)](#) [![status](https://img.shields.io/badge/status-vertical%20slice%20done-orange)](#-roadmap) [![license](https://img.shields.io/badge/license-TBD-lightgrey)](#-open-source--compliance)
+[![ci](https://github.com/evo-Vonish/Doppel/actions/workflows/ci.yml/badge.svg)](https://github.com/evo-Vonish/Doppel/actions/workflows/ci.yml) [![tests](https://img.shields.io/badge/pytest-479%20passed-brightgreen)](#-quality-baseline) [![node tests](https://img.shields.io/badge/node--test-25%20passed-brightgreen)](#-quality-baseline) [![python](https://img.shields.io/badge/python-3.11%2B-blue)](#) [![status](https://img.shields.io/badge/status-vertical%20slice%20done-orange)](#-roadmap) [![license](https://img.shields.io/badge/license-TBD-lightgrey)](#-open-source--compliance)
 
 **Doppel (codename *tishen*, 替身)** is a **local-first algorithmic browser** built from two complementary subsystems:
 
