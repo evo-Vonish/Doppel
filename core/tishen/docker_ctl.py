@@ -95,7 +95,6 @@ def build_run_command(persona: Persona, image_tag: str,
         f"--shm-size={SHM_SIZE}",
         *gpu_passthrough_args(),                        # GPU 透传（R2；Linux/WSL2）
         "--cap-add", "NET_RAW", "--cap-add", "NET_ADMIN",  # 观测抓包所需
-        "--security-opt", "seccomp=default",          # 安全基线：不加 --no-sandbox
         "-v", f"{persona.storage.profile_volume}:/persona/profile",
         "-v", f"{persona.storage.log_volume}:/persona/logs",
         "-v", f"{yaml_path}:/persona/persona.yaml:ro",     # persona 只读挂载
