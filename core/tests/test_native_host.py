@@ -252,7 +252,8 @@ def _run_bake_dry_run(capsys):
     mod.step7_7_hook(SimpleNamespace(meta=SimpleNamespace(id="p_bake")))
     persona = SimpleNamespace(
         region=SimpleNamespace(locale="zh-CN"),
-        webrtc=SimpleNamespace(ip_handling_policy="default"))
+        webrtc=SimpleNamespace(ip_handling_policy="default"),
+        proxy=None)
     argv = mod.build_chrome_argv(persona, "mesa")
     return capsys.readouterr().out, argv
 

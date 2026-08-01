@@ -3,6 +3,7 @@
 import importlib.util
 import os
 import stat
+import types
 from pathlib import Path
 
 import pytest
@@ -138,6 +139,20 @@ def test_main_launches_chrome_as_ubuntu_without_forbidden_flags():
     assert 'FORBIDDEN_FLAGS = ("--no-sandbox", "--remote-debugging-port")' in source
     launch_section = source[source.index('log(f"启动 Chrome') : source.index('_boot_mark("chrome_launch")')]
     assert "--no-sandbox" not in launch_section
+
+
+def test_chrome_uses_explicit_persona_proxy_only_when_configured(bake):
+    persona = types.SimpleNamespace(
+        region=types.SimpleNamespace(locale="en-CA"),
+        webrtc=types.SimpleNamespace(ip_handling_policy="disable_non_proxied_udp"),
+        proxy="http://host.docker.internal:11089",
+    )
+    argv = bake.build_chrome_argv(persona, "mesa")
+    assert "--proxy-server=http://host.docker.internal:11089" in argv
+
+    persona.proxy = None
+    argv = bake.build_chrome_argv(persona, "mesa")
+    assert not any(arg.startswith("--proxy-server=") for arg in argv)
 
 
 def test_hook_bus_removes_stale_volume_socket_before_spawn_and_handoff():

@@ -144,6 +144,7 @@ def test_build_run_command_neko_args(home):
     # M1 基线不回归
     assert f"--shm-size={docker_ctl.SHM_SIZE}" in argv
     assert argv[argv.index("--hostname") + 1] == docker_ctl.container_name(persona.meta.id)
+    assert argv[argv.index("--add-host") + 1] == "host.docker.internal:host-gateway"
     assert "--no-sandbox" not in " ".join(argv)
     # 非 root Chrome 保留 setuid sandbox；仅补 namespace 能力，不放宽 seccomp。
     assert argv.count("SYS_ADMIN") == 1

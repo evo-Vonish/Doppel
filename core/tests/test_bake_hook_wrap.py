@@ -325,6 +325,6 @@ def test_dry_run_contract_no_writes(bake, persona, monkeypatch, tmp_path, capsys
 def test_build_chrome_argv_load_extension_unchanged(bake, persona):
     argv = bake.build_chrome_argv(persona_display := types.SimpleNamespace(
         meta=types.SimpleNamespace(id="p"), region=types.SimpleNamespace(locale="zh-CN"),
-        webrtc=types.SimpleNamespace(ip_handling_policy="default")), "mesa")
+        webrtc=types.SimpleNamespace(ip_handling_policy="default"), proxy=None), "mesa")
     assert f"--load-extension={bake.HOOK_EXT_DIR}" in argv
     assert "--no-sandbox" not in argv and "--remote-debugging-port" not in " ".join(argv)
