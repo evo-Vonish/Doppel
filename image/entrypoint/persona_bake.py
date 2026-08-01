@@ -40,6 +40,7 @@ CHROME_VERSION_FILE = "/etc/tishen/chrome_version"  # 镜像构建期落档的�
 FONTCONFIG_TEMPLATE = "/opt/tishen/config/fontconfig-pack.conf.template"
 OBSERVABILITY_DAEMON = "/opt/tishen/scripts/observability-daemon.sh"
 XORG_CONFIG = "/opt/tishen/config/xorg-dummy.conf"
+XORG_RUNTIME_CONFIG = "/run/tishen/xorg-persona.conf"
 NEKO_BIN = "/opt/neko/neko"                     # L5 流层安装的 neko v2 server 二进制
 DISPLAY_ID = ":0"                               # 虚拟显示器编号
 X_READY_TIMEOUT = 15                            # 等待 X 就绪秒数
@@ -234,20 +235,77 @@ def step4_fonts(persona) -> None:
 
 
 # ── 第 5 步：显示（虚拟屏就绪 + 分辨率/DPR）───────────────────────────────
+def _write_persona_xorg_config(w: int, h: int) -> str:
+    """Write an exact-size dummy-driver mode before Xorg starts.
+
+    ``cvt`` rounds horizontal active pixels to a multiple of eight (for
+    example 1366 becomes 1368). RandR then cannot shrink the framebuffer back
+    to the persona width. The dummy driver accepts the requested active width
+    when the otherwise-CVT timing is present in the startup config.
+    """
+    cvt = run_cmd(["cvt", str(w), str(h), "60"], "生成 Xorg Modeline")
+    modeline = None
+    for line in cvt.stdout.splitlines():
+        match = re.match(r'^Modeline\s+"\S+"\s+(.*)$', line.strip())
+        if match:
+            modeline = match.group(1).split()
+            break
+    if modeline is None or len(modeline) < 9:
+        fail(f"cvt 未产出可用 Modeline（{w}x{h}）")
+
+    # Pixel clock is item 0; horizontal/vertical active sizes are 1 and 5.
+    modeline[1] = str(w)
+    modeline[5] = str(h)
+    mode_name = f"{w}x{h}_tishen"
+    config = f'''Section "Device"
+    Identifier "TishenDummyDevice"
+    Driver "dummy"
+    VideoRam 256000
+EndSection
+
+Section "Monitor"
+    Identifier "TishenDummyMonitor"
+    HorizSync 28.0-80.0
+    VertRefresh 48.0-75.0
+    Modeline "{mode_name}" {' '.join(modeline)}
+EndSection
+
+Section "Screen"
+    Identifier "TishenDummyScreen"
+    Device "TishenDummyDevice"
+    Monitor "TishenDummyMonitor"
+    DefaultDepth 24
+    SubSection "Display"
+        Depth 24
+        Modes "{mode_name}"
+        Virtual {w} {h}
+    EndSubSection
+EndSection
+'''
+    path = Path(XORG_RUNTIME_CONFIG)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(config, encoding="utf-8")
+    except OSError as exc:
+        fail(f"写入 persona Xorg 配置失败：{exc}")
+    log(f"persona Xorg 配置已生成：{path}（exact {w}x{h}）")
+    return str(path)
+
+
 def _x_ready() -> bool:
     """探测 X 服务是否可用。"""
     proc = subprocess.run(["xrandr", "--query"], capture_output=True)
     return proc.returncode == 0
 
 
-def _ensure_x_server() -> None:
+def _ensure_x_server(config_path: str = XORG_CONFIG) -> bool:
     """虚拟显示器未起时用 dummy 配置拉起 Xorg（坑位 5：dummy 默认分辨率不可信）。"""
     if _x_ready():
-        return
-    log(f"未检测到可用 X 服务，使用虚拟显示器配置拉起：Xorg {DISPLAY_ID} -config {XORG_CONFIG}")
+        return False
+    log(f"未检测到可用 X 服务，使用虚拟显示器配置拉起：Xorg {DISPLAY_ID} -config {config_path}")
     try:
         _CHILDREN["xorg"] = subprocess.Popen(
-            ["Xorg", DISPLAY_ID, "-config", XORG_CONFIG, "-noreset"],
+            ["Xorg", DISPLAY_ID, "-config", config_path, "-noreset"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
     except OSError as exc:
@@ -255,11 +313,20 @@ def _ensure_x_server() -> None:
     deadline = time.monotonic() + X_READY_TIMEOUT
     while time.monotonic() < deadline:
         if _x_ready():
-            return
+            return True
         if _CHILDREN["xorg"].poll() is not None:
             fail(f"Xorg 虚拟显示器意外退出（rc={_CHILDREN['xorg'].returncode}）")
         time.sleep(0.5)
     fail(f"等待 X 服务就绪超时（{X_READY_TIMEOUT}s）")
+
+
+def _screen_size() -> tuple[int, int] | None:
+    """Return the current RandR framebuffer size."""
+    proc = subprocess.run(["xrandr", "--query"], capture_output=True, text=True)
+    match = re.search(r"\bcurrent\s+(\d+)\s+x\s+(\d+),", proc.stdout)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
 
 
 def _first_output() -> str | None:
@@ -297,17 +364,22 @@ def step5_display(persona) -> None:
     w, h, dpr = persona.display.width, persona.display.height, persona.display.dpr
     os.environ.setdefault("DISPLAY", DISPLAY_ID)
     if _DRY_RUN:
-        log(f"[dry-run] 将确保虚拟屏就绪并执行：xrandr --fb {w}x{h} + 输出模式设置（dpr={dpr}）")
+        log(f"[dry-run] 将生成 exact {w}x{h} Xorg 配置并复验 framebuffer（dpr={dpr}）")
     else:
-        _ensure_x_server()
-        output = _first_output()
-        if output is None:
-            log("警告：未发现已连接输出，跳过输出模式设置（仅帧缓冲生效）")
-        else:
-            # 先缩输出再缩 framebuffer；反序时，小于 dummy 初始模式的 persona
-            # 会被 RandR 以“screen not large enough for output”拒绝。
-            _set_output_mode(output, w, h)
+        started_xorg = False
+        if not _x_ready():
+            config_path = _write_persona_xorg_config(w, h)
+            started_xorg = _ensure_x_server(config_path)
+        if not started_xorg:
+            output = _first_output()
+            if output is None:
+                log("警告：未发现已连接输出，跳过输出模式设置（仅帧缓冲生效）")
+            else:
+                _set_output_mode(output, w, h)
         run_cmd(["xrandr", "--fb", f"{w}x{h}"], "设置帧缓冲分辨率")
+        actual = _screen_size()
+        if actual != (w, h):
+            fail(f"显示 framebuffer 复验失败：期望 {w}x{h}，实际 {actual}")
     if dpr > 1:
         # Qt 支持小数缩放；GTK(GDK_SCALE) 仅认整数，非整数 dpr 时取整仅供 GTK 应用参考
         os.environ["QT_SCALE_FACTOR"] = str(dpr)
