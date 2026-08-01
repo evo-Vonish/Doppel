@@ -137,13 +137,70 @@ def test_stream_image_still_requires_neko_password(bake, monkeypatch, tmp_path):
     assert exc.value.code == 2
 
 
-def test_display_sets_output_mode_before_shrinking_framebuffer(bake, monkeypatch):
+def test_persona_xorg_config_preserves_exact_active_width(bake, monkeypatch, tmp_path):
+    output = tmp_path / "xorg-persona.conf"
+    cvt_stdout = (
+        "# 1368x768 59.88 Hz (CVT)\n"
+        'Modeline "1368x768_60.00" 85.25 1368 1440 1576 1784 '
+        "768 771 781 798 -hsync +vsync\n"
+    )
+    monkeypatch.setattr(bake, "XORG_RUNTIME_CONFIG", str(output))
+    monkeypatch.setattr(
+        bake,
+        "run_cmd",
+        lambda argv, desc, check=True: subprocess.CompletedProcess(
+            argv, 0, cvt_stdout, ""
+        ),
+    )
+
+    assert bake._write_persona_xorg_config(1366, 768) == str(output)
+
+    config = output.read_text(encoding="utf-8")
+    assert 'Modeline "1366x768_tishen" 85.25 1366 1440 1576 1784' in config
+    assert "768 771 781 798 -hsync +vsync" in config
+    assert 'Modes "1366x768_tishen"' in config
+    assert "Virtual 1366 768" in config
+
+
+def test_display_starts_xorg_with_exact_persona_config(bake, monkeypatch):
     persona = types.SimpleNamespace(
         display=types.SimpleNamespace(width=1366, height=768, dpr=1.0))
     calls = []
     monkeypatch.setattr(bake, "_DRY_RUN", False)
-    monkeypatch.setattr(bake, "_ensure_x_server", lambda: None)
+    monkeypatch.setattr(bake, "_x_ready", lambda: False)
+    monkeypatch.setattr(
+        bake,
+        "_write_persona_xorg_config",
+        lambda width, height: calls.append(("config", width, height)) or "/tmp/exact.conf",
+    )
+    monkeypatch.setattr(
+        bake,
+        "_ensure_x_server",
+        lambda path: calls.append(("ensure", path)) or True,
+    )
+    monkeypatch.setattr(
+        bake, "_first_output", lambda: pytest.fail("new Xorg must already be exact")
+    )
+    monkeypatch.setattr(bake, "_screen_size", lambda: (1366, 768))
+    monkeypatch.setattr(
+        bake, "run_cmd", lambda argv, desc, check=True: calls.append(("cmd", argv, desc))
+    )
+
+    bake.step5_display(persona)
+
+    assert calls[0] == ("config", 1366, 768)
+    assert calls[1] == ("ensure", "/tmp/exact.conf")
+    assert calls[2][0:2] == ("cmd", ["xrandr", "--fb", "1366x768"])
+
+
+def test_existing_display_sets_output_mode_before_framebuffer(bake, monkeypatch):
+    persona = types.SimpleNamespace(
+        display=types.SimpleNamespace(width=1366, height=768, dpr=1.0))
+    calls = []
+    monkeypatch.setattr(bake, "_DRY_RUN", False)
+    monkeypatch.setattr(bake, "_x_ready", lambda: True)
     monkeypatch.setattr(bake, "_first_output", lambda: "DUMMY0")
+    monkeypatch.setattr(bake, "_screen_size", lambda: (1366, 768))
     monkeypatch.setattr(
         bake, "_set_output_mode",
         lambda output, width, height: calls.append(("mode", output, width, height)),
@@ -157,6 +214,20 @@ def test_display_sets_output_mode_before_shrinking_framebuffer(bake, monkeypatch
 
     assert calls[0] == ("mode", "DUMMY0", 1366, 768)
     assert calls[1][0:2] == ("cmd", ["xrandr", "--fb", "1366x768"])
+
+
+def test_display_rejects_framebuffer_mismatch(bake, monkeypatch):
+    persona = types.SimpleNamespace(
+        display=types.SimpleNamespace(width=1366, height=768, dpr=1.0))
+    monkeypatch.setattr(bake, "_DRY_RUN", False)
+    monkeypatch.setattr(bake, "_x_ready", lambda: True)
+    monkeypatch.setattr(bake, "_first_output", lambda: "DUMMY0")
+    monkeypatch.setattr(bake, "_set_output_mode", lambda output, width, height: None)
+    monkeypatch.setattr(bake, "run_cmd", lambda argv, desc, check=True: None)
+    monkeypatch.setattr(bake, "_screen_size", lambda: (1368, 768))
+
+    with pytest.raises(SystemExit):
+        bake.step5_display(persona)
 
 
 # ── _extension_id 金标准对拍 ────────────────────────────────────────────────
