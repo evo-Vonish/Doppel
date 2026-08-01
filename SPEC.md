@@ -78,7 +78,7 @@ project/
 | evolution.strategy | str | 恒 anchor_chrome_version |
 | evolution.baseline_chrome | str | 形如 138.0.7204.0 |
 | evolution.drift_policy | str | 恒 follow_stable_diff |
-| proxy | null 或 str | 本期恒 null |
+| proxy | null 或 str | 可选显式 http/socks5 端点；null 表示直连 |
 | storage.profile_volume / storage.log_volume | str | docker 卷名 |
 | storage.retain_days | int | ≥1 |
 | monitoring.keylog | bool | 恒 true |

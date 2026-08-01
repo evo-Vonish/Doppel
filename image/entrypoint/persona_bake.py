@@ -703,6 +703,10 @@ def build_chrome_argv(persona, gpu_vendor: str) -> list[str]:
     else:
         argv += ["--use-gl=angle", "--use-angle=gl"]
     argv += ["--no-first-run", "--no-default-browser-check", "--ozone-platform=x11"]
+    if persona.proxy is not None:
+        # V10 已限制为 http/socks5 端点；显式交给 Chrome，避免依赖容器外的
+        # “全局代理/透明代理”假设（Docker bridge 通常不会继承宿主 TUN 路径）。
+        argv.append(f"--proxy-server={persona.proxy}")
     # SPEC-E3 §2.3：加载 MV3 hook 扩展（镜像内固化目录；缺失时 Chrome 仅告警不拒启）
     argv.append(f"--load-extension={HOOK_EXT_DIR}")
     return argv

@@ -95,6 +95,9 @@ def build_run_command(persona: Persona, image_tag: str,
         # Chrome profile 的 SingletonLock 编码 hostname；按 persona 固定，避免容器重建
         # 时随机容器 ID 被误判成“另一台机器正在使用 profile”。
         "--hostname", container_name(pid),
+        # persona.proxy 可引用宿主侧本地代理；Linux Docker 不默认提供该别名，
+        # host-gateway 映射避免把 172.17.0.1 等桥接地址写死进 persona。
+        "--add-host", "host.docker.internal:host-gateway",
         f"--shm-size={SHM_SIZE}",
         *gpu_passthrough_args(),                        # GPU 透传（R2；Linux/WSL2）
         "--cap-add", "NET_RAW", "--cap-add", "NET_ADMIN",  # 观测抓包所需

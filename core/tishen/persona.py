@@ -193,7 +193,7 @@ class Persona:
     webrtc: Webrtc
     farbling: Farbling
     evolution: Evolution
-    proxy: str | None        # 本期恒 null
+    proxy: str | None        # 可选显式 http/socks5 代理（格式由 linter V10 约束）
     storage: Storage
     monitoring: Monitoring
     lifecycle: Lifecycle
@@ -323,7 +323,7 @@ def _from_dict(d: dict) -> Persona:
         # 演化扩展字段（§二）：整块可缺省，缺省取默认值；
         # current_chrome 缺省回填 baseline_chrome（未演化的 persona 当前版=出生基线）
         evolution=_evolution_from_dict(evolution),
-        proxy=d.get("proxy"),  # 本期恒 null
+        proxy=d.get("proxy"),
         storage=Storage(
             profile_volume=_require(storage, "profile_volume", "storage.profile_volume"),
             log_volume=_require(storage, "log_volume", "storage.log_volume"),
@@ -549,7 +549,7 @@ def validate_structure(persona: Persona) -> list[str]:
                 err(f"{prefix}.stable_release_date",
                     f"须为 YYYY-MM-DD 合法日期，实际为 {h['stable_release_date']!r}")
 
-    # proxy：本期恒 null 或字符串（格式合法性归 linter V10）
+    # proxy：null 或字符串（格式合法性归 linter V10）
     if persona.proxy is not None and not _is_str(persona.proxy):
         err("proxy", f"须为 null 或字符串，实际为 {persona.proxy!r}")
 
