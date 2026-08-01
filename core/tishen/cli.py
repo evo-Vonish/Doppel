@@ -196,10 +196,12 @@ def cmd_start(args) -> int:
         if exists:
             rc, out, err = docker_ctl.start_container(args.id)
         else:
-            # M2：创建容器时生成随机 neko 口令，经 -e 注入（persona-bake 第 7.5 步强制校验）
-            new_password = docker_ctl.generate_neko_password()
+            image_tag = _image_tag()
+            # 仅 stream 镜像发布端口并注入口令；M1 四层镜像不伪造连接信息。
+            if docker_ctl.image_has_stream(image_tag):
+                new_password = docker_ctl.generate_neko_password()
             rc, out, err = docker_ctl.run_persona_container(
-                persona, _image_tag(), _personas_dir(), new_password)
+                persona, image_tag, _personas_dir(), new_password)
         if rc != 0:
             print(f"启动替身 {args.id}：失败（退出码 {rc}）。", file=sys.stderr)
             detail = (err or out).strip()

@@ -10,7 +10,7 @@ neko 只负责抓屏推流与输入回注，不接管 Chrome 生命周期（避�
 
 输入：/persona/persona.yaml（只读挂载）
 环境变量：GPU_VENDOR（mesa|nvidia，默认 mesa）、MONITOR_PCAP（0|1，默认 1）、
-          NEKO_PASSWORD（neko 流服务登录口令，缺失则拒绝启动——口令只经环境变量注入，不落盘）
+          NEKO_PASSWORD（仅 stream 镜像需要；缺失则拒绝启动流服务，口令只经环境变量注入）
 参数：--dry-run 冒烟模式——跑完第 1–7.5 步后打印将要执行的 neko/Chrome 启动计划并退出 0
 """
 
@@ -503,7 +503,8 @@ def step7_7_hook(persona) -> None:
 # 在 fcitx5 之后、Chrome 之前受监督启动 neko server：neko 抓虚拟屏推 WebRTC 流并回注输入，
 # 不接管 Chrome 生命周期（M2 方案 §二.2）。
 # 口令纪律：NEKO_PASSWORD 只经环境变量注入（docker run -e，创建替身时随机生成），
-# 缺失则拒绝启动（无人值守的流服务不允许以默认/空口令裸奔）。
+# stream 镜像中缺失则拒绝启动（无人值守的流服务不允许以默认/空口令裸奔）；
+# M1/P1 的 tishen 四层镜像不含二进制，明确跳过本步骤。
 def build_neko_argv() -> list[str]:
     """组装 neko 启动行；NEKO_BIND/ICELITE/NAT1TO1/EPR 走镜像 ENV 默认值。"""
     return [NEKO_BIN, "serve"]
@@ -519,11 +520,12 @@ def step7_5_neko() -> None:
         log(f"[dry-run] 将后台启动：{line}（neko 流服务；NEKO_PASSWORD {pwd_note}；"
             f"NEKO_BIND={os.environ.get('NEKO_BIND', ':8080')}）")
         return
+    if not Path(NEKO_BIN).is_file():
+        log(f"镜像未含 L5 流层，跳过 neko：{NEKO_BIN}（M1/P1 模式）")
+        return
     if not neko_password:
         fail("NEKO_PASSWORD 环境变量缺失：neko 流服务拒绝以无口令状态启动。"
              "请在 docker run 时经 -e NEKO_PASSWORD=... 注入（由 tishen CLI 创建替身时随机生成）", 2)
-    if not Path(NEKO_BIN).is_file():
-        fail(f"neko server 二进制不存在：{NEKO_BIN}（镜像未含 L5 流层，请用 stream 阶段的镜像构建）", 2)
     spawn("neko", argv, "neko 流服务（WebRTC 推流/输入回注）")
 
 

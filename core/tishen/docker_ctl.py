@@ -211,6 +211,15 @@ def image_exists(tag: str) -> bool:
     return rc == 0
 
 
+def image_has_stream(tag: str) -> bool:
+    """镜像是否声明内含 L5 流层；旧镜像或 inspect 失败均按 M1 处理。"""
+    rc, out, _ = _run([
+        "docker", "image", "inspect", "--format",
+        '{{index .Config.Labels "tishen.stream.enabled"}}', tag,
+    ])
+    return rc == 0 and out.strip().lower() == "true"
+
+
 def pull_image(tag: str) -> tuple[int, str, str]:
     """拉取替身平台镜像（M2 首启引导第 3 步；网络动作由使用者在真实环境触发）。"""
     return _run(["docker", "pull", tag])

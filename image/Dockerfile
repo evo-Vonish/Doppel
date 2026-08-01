@@ -143,7 +143,8 @@ RUN rm -rf /var/cache/apt/archives /tmp/* /var/tmp/*
 
 # 镜像标签：标题 + Chrome 精确版本（构建期从落档文件注入标签值）
 LABEL org.opencontainers.image.title="tishen-persona-image" \
-    tishen.chrome.version="${CHROME_VERSION}"
+    tishen.chrome.version="${CHROME_VERSION}" \
+    tishen.stream.enabled="false"
 
 ENTRYPOINT ["/opt/tishen/entrypoint/persona-bake"]
 
@@ -172,6 +173,8 @@ RUN curl -fSL -o /tmp/neko.tar.gz \
     && tar -xzf /tmp/neko.tar.gz -C /opt/neko \
     && chmod +x /opt/neko/neko \
     && rm -f /tmp/neko.tar.gz
+
+LABEL tishen.stream.enabled="true"
 
 # neko 运行时默认（M2 方案 §二.3：本地优先，零外联）：
 # 容器内 HTTP/WebSocket 监听 8080；WebRTC 走 host candidate（本机 loopback），不配 STUN/TURN。
