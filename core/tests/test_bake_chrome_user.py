@@ -1,0 +1,115 @@
+"""真机格 3：Chrome 非 root + setuid sandbox 运行契约。"""
+
+import importlib.util
+import os
+import stat
+from pathlib import Path
+
+import pytest
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+BAKE_PATH = REPO_ROOT / "image" / "entrypoint" / "persona_bake.py"
+
+
+@pytest.fixture()
+def bake():
+    spec = importlib.util.spec_from_file_location("tishen_persona_bake_chrome_user", BAKE_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_prepare_chrome_user_dry_run_is_read_only(bake, monkeypatch):
+    bake._DRY_RUN = True
+    monkeypatch.setattr(
+        bake,
+        "_chown_tree_once",
+        lambda path: pytest.fail(f"dry-run 不应迁移目录：{path}"),
+    )
+
+    env = bake.prepare_chrome_user()
+
+    assert env["HOME"] == "/home/ubuntu"
+    assert env["USER"] == env["LOGNAME"] == "ubuntu"
+    assert env["XDG_RUNTIME_DIR"] == "/run/user/1000"
+
+
+def test_prepare_chrome_user_hands_off_only_chrome_write_paths(bake, monkeypatch):
+    bake._DRY_RUN = False
+    handed_off = []
+    chmod_calls = []
+    monkeypatch.setattr(bake, "_chown_tree_once", lambda path: handed_off.append(str(path)))
+    monkeypatch.setattr(Path, "chmod", lambda path, mode: chmod_calls.append((str(path), mode)))
+
+    env = bake.prepare_chrome_user()
+
+    assert [path.replace("\\", "/") for path in handed_off] == [
+        "/persona/profile",
+        "/persona/logs/sslkeys",
+        "/persona/logs/hook",
+        "/run/user/1000",
+    ]
+    assert [(path.replace("\\", "/"), mode) for path, mode in chmod_calls] == [
+        ("/run/user/1000", 0o700)
+    ]
+    assert env["HOME"] == bake.CHROME_HOME
+
+
+def test_chown_tree_migrates_root_last_and_skips_after_handoff(bake, monkeypatch, tmp_path):
+    root = tmp_path / "profile"
+    child = root / "Default"
+    child.mkdir(parents=True)
+    cookie = child / "Cookies"
+    cookie.write_text("fixture", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(bake, "CHROME_UID", 4242)
+    monkeypatch.setattr(bake, "CHROME_GID", 4343)
+    monkeypatch.setattr(
+        bake.os,
+        "chown",
+        lambda path, uid, gid, **kwargs: calls.append((Path(path), uid, gid, kwargs)),
+        raising=False,
+    )
+
+    bake._chown_tree_once(root)
+
+    assert calls[-1][:3] == (root, 4242, 4343)
+    assert {item[0] for item in calls[:-1]} == {child, cookie}
+    assert all(item[3] == {"follow_symlinks": False} for item in calls)
+
+    # 根目录已完成交接时不再遍历大型持久化 profile。
+    calls.clear()
+    monkeypatch.setattr(bake, "CHROME_UID", root.stat().st_uid)
+    monkeypatch.setattr(bake, "CHROME_GID", root.stat().st_gid)
+    bake._chown_tree_once(root)
+    assert calls == []
+
+
+def test_hook_socket_is_handed_to_chrome_user_and_stays_0600(bake, monkeypatch, tmp_path):
+    socket_path = tmp_path / "hook.sock"
+    socket_path.touch()
+    ownership = []
+    monkeypatch.setattr(bake, "HOOK_SOCKET", str(socket_path))
+    monkeypatch.setattr(
+        bake.os,
+        "chown",
+        lambda path, uid, gid: ownership.append((Path(path), uid, gid)),
+        raising=False,
+    )
+
+    bake._handoff_hook_socket(timeout=0.1)
+
+    assert ownership == [(socket_path, bake.CHROME_UID, bake.CHROME_GID)]
+    if os.name != "nt":
+        assert stat.S_IMODE(socket_path.stat().st_mode) == 0o600
+
+
+def test_main_launches_chrome_as_ubuntu_without_forbidden_flags():
+    source = BAKE_PATH.read_text(encoding="utf-8")
+    assert "user=CHROME_UID" in source
+    assert "group=CHROME_GID" in source
+    assert "extra_groups=()" in source
+    assert 'FORBIDDEN_FLAGS = ("--no-sandbox", "--remote-debugging-port")' in source
+    launch_section = source[source.index('log(f"启动 Chrome') : source.index('_boot_mark("chrome_launch")')]
+    assert "--no-sandbox" not in launch_section

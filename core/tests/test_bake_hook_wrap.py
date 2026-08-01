@@ -86,12 +86,20 @@ def _isolate_hook_paths(bake, monkeypatch, tmp_path):
     monkeypatch.setattr(bake, "HOOK_NATIVE_MANIFEST_DIR", str(tmp_path / "NativeMessagingHosts"))
     monkeypatch.setattr(bake, "HOOK_NATIVE_MANIFEST_TEMPLATE", str(MANIFEST_TEMPLATE))
     monkeypatch.setattr(bake, "_hook_bus_available", lambda: False)
+    monkeypatch.setattr(bake.os, "chown", lambda *args, **kwargs: None, raising=False)
 
 
 # ── 包装脚本生成 ────────────────────────────────────────────────────────────
-def test_wrapper_argv_baked_and_mode0700(bake, persona, monkeypatch, tmp_path):
+def test_wrapper_argv_baked_and_root_owned_mode0750(bake, persona, monkeypatch, tmp_path):
     wrapper = tmp_path / "run" / "tishen" / "native-host-wrapper.sh"
+    ownership = []
     monkeypatch.setattr(bake, "HOOK_WRAPPER", str(wrapper))
+    monkeypatch.setattr(
+        bake.os,
+        "chown",
+        lambda path, uid, gid, **kwargs: ownership.append((Path(path), uid, gid)),
+        raising=False,
+    )
     result = bake._write_native_host_wrapper(persona, "sess-abc")
     assert result == str(wrapper)
     body = wrapper.read_text(encoding="utf-8")
@@ -103,8 +111,14 @@ def test_wrapper_argv_baked_and_mode0700(bake, persona, monkeypatch, tmp_path):
     assert f"--socket {bake.HOOK_SOCKET}" in body
     assert f"--payload-log {bake.HOOK_PAYLOAD_LOG}" in body
     assert body.rstrip().endswith('"$@"')
-    # 0700 权限
-    assert stat.S_IMODE(wrapper.stat().st_mode) == 0o700
+    # root:ubuntu + 0750：Chrome 可执行，不能改写。
+    assert ownership == [(wrapper, 0, bake.CHROME_GID)]
+    if os.name != "nt":
+        assert stat.S_IMODE(wrapper.stat().st_mode) == 0o750
+
+
+def test_default_manifest_uses_google_chrome_system_path(bake):
+    assert bake.HOOK_NATIVE_MANIFEST_DIR == "/etc/opt/chrome/native-messaging-hosts"
 
 
 def test_wrapper_generation_failure_degrades(bake, persona, monkeypatch, tmp_path, capsys):

@@ -262,7 +262,7 @@ def test_bake_dry_run_contains_hook_section(capsys):
     assert "tishen.observ.hook_bus" in out            # 总线 spawn 计划
     assert "--socket /persona/logs/hook.sock" in out
     assert "native manifest" in out                   # manifest 落位计划
-    assert "NativeMessagingHosts" in out
+    assert "native-messaging-hosts" in out
 
 
 def test_bake_chrome_argv_loads_hook_extension(capsys):
