@@ -115,6 +115,28 @@ def test_wrapper_generation_failure_degrades(bake, persona, monkeypatch, tmp_pat
     assert "降级" in capsys.readouterr().out
 
 
+def test_m1_image_without_neko_skips_stream_layer(bake, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(bake, "NEKO_BIN", str(tmp_path / "missing-neko"))
+    monkeypatch.setattr(bake, "_DRY_RUN", False)
+    monkeypatch.delenv("NEKO_PASSWORD", raising=False)
+
+    bake.step7_5_neko()
+
+    assert "M1/P1 模式" in capsys.readouterr().out
+
+
+def test_stream_image_still_requires_neko_password(bake, monkeypatch, tmp_path):
+    neko = tmp_path / "neko"
+    neko.write_text("binary placeholder", encoding="utf-8")
+    monkeypatch.setattr(bake, "NEKO_BIN", str(neko))
+    monkeypatch.setattr(bake, "_DRY_RUN", False)
+    monkeypatch.delenv("NEKO_PASSWORD", raising=False)
+
+    with pytest.raises(SystemExit) as exc:
+        bake.step7_5_neko()
+    assert exc.value.code == 2
+
+
 # ── _extension_id 金标准对拍 ────────────────────────────────────────────────
 @openssl_required
 def test_extension_id_golden(bake, key_file):

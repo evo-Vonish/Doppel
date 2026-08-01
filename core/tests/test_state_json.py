@@ -166,6 +166,15 @@ def test_container_host_port_parse(monkeypatch):
     assert docker_ctl.container_host_port("p_x") is None
 
 
+def test_image_has_stream_reads_capability_label(monkeypatch):
+    monkeypatch.setattr(docker_ctl, "_run", lambda args: (0, "true\n", ""))
+    assert docker_ctl.image_has_stream("stream-tag") is True
+    monkeypatch.setattr(docker_ctl, "_run", lambda args: (0, "false\n", ""))
+    assert docker_ctl.image_has_stream("m1-tag") is False
+    monkeypatch.setattr(docker_ctl, "_run", lambda args: (1, "", "missing"))
+    assert docker_ctl.image_has_stream("missing-tag") is False
+
+
 # ---------------------------------------------------------------------------
 # cli --json 输出契约
 # ---------------------------------------------------------------------------
@@ -228,6 +237,7 @@ def test_start_json_contract_new_container(home, capsys, monkeypatch):
         return 0, "container-id", ""
 
     monkeypatch.setattr(cli.docker_ctl, "container_exists", lambda pid: False)
+    monkeypatch.setattr(cli.docker_ctl, "image_has_stream", lambda tag: True)
     monkeypatch.setattr(cli.docker_ctl, "run_persona_container",
                         fake_run_persona_container)
     monkeypatch.setattr(cli.docker_ctl, "container_host_port", lambda pid: 49153)
@@ -246,6 +256,32 @@ def test_start_json_contract_new_container(home, capsys, monkeypatch):
         rec = db.get(FIXTURE_ID)
         assert rec["host_port"] == 49153
         assert rec["neko_password"] == payload["password"]
+
+
+def test_start_json_m1_image_has_no_fake_stream_connection(home, capsys, monkeypatch):
+    """M1 四层镜像不注入口令、不发布端口，也不返回伪造的 embed URL。"""
+    _install_persona_yaml(home)
+    with StateDB() as db:
+        _add_record(db, FIXTURE_ID)
+
+    captured = {}
+
+    def fake_run_persona_container(persona, image_tag, personas_dir, neko_password):
+        captured["neko_password"] = neko_password
+        return 0, "container-id", ""
+
+    monkeypatch.setattr(cli.docker_ctl, "container_exists", lambda pid: False)
+    monkeypatch.setattr(cli.docker_ctl, "image_has_stream", lambda tag: False)
+    monkeypatch.setattr(cli.docker_ctl, "run_persona_container",
+                        fake_run_persona_container)
+    monkeypatch.setattr(cli.docker_ctl, "container_host_port", lambda pid: None)
+
+    assert cli.main(["start", FIXTURE_ID, "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert captured["neko_password"] is None
+    assert payload["host_port"] is None
+    assert payload["password"] is None
+    assert payload["embed_url"] is None
 
 
 def test_start_json_existing_container_uses_stored_password(home, capsys, monkeypatch):
