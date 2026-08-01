@@ -91,6 +91,43 @@ def test_migration_from_m1_schema(home, tmp_path):
 # docker_ctl：M2 端口/口令注入与 docker port 解析（纯逻辑，monkeypatch 假边界）
 # ---------------------------------------------------------------------------
 
+
+def test_gpu_passthrough_args_wsl_grid3():
+    """WSL2 格 3 必须注入 dxg、两处共享目录与用户态库搜索路径。"""
+    argv = docker_ctl.gpu_passthrough_args("wsl")
+    assert argv[:2] == ["--device", "/dev/dxg"]
+    assert "type=bind,source=/usr/lib/wsl,target=/usr/lib/wsl,readonly" in argv
+    assert "type=bind,source=/mnt/wslg,target=/mnt/wslg,readonly" in argv
+    assert "LD_LIBRARY_PATH=/usr/lib/wsl/lib" in argv
+    assert "/dev/dri" not in argv
+
+
+def test_gpu_passthrough_args_dri_and_missing_compatibility():
+    """普通 Linux 与无设备环境维持既有 DRI 命令，由 doctor 负责前置报错。"""
+    expected = ["--device", "/dev/dri"]
+    assert docker_ctl.gpu_passthrough_args("dri") == expected
+    assert docker_ctl.gpu_passthrough_args("missing") == expected
+
+
+def test_gpu_passthrough_args_rejects_unknown_backend():
+    with pytest.raises(ValueError, match="未知 GPU 后端"):
+        docker_ctl.gpu_passthrough_args("software")
+
+
+def test_build_run_command_uses_detected_wsl_gpu(monkeypatch, home):
+    """真实命令组装必须使用自动探测结果，而非继续硬编码 /dev/dri。"""
+    from pathlib import Path
+    from tishen.persona import load
+
+    monkeypatch.setattr(docker_ctl, "detect_gpu_backend", lambda: "wsl")
+    persona = load(Path(__file__).parent / "fixtures" / "valid_cn.yaml")
+    argv = docker_ctl.build_run_command(persona, "tag", home / "personas")
+
+    assert "/dev/dxg" in argv
+    assert "/dev/dri" not in argv
+    assert "LD_LIBRARY_PATH=/usr/lib/wsl/lib" in argv
+
+
 def test_build_run_command_neko_args(home):
     """docker run 追加 -p 127.0.0.1:0:8080 与 -e NEKO_PASSWORD=<口令>。"""
     from tishen.persona import load
