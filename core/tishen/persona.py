@@ -34,6 +34,10 @@ FONT_EXTRAS_CHOICES = {"cjk"}
 FARBLING_SCOPE_CHOICES = {"canvas_readback", "webgl_readback", "audio"}
 LIFECYCLE_STATES = {"creating", "active", "suspended", "destroyed"}
 
+# 演化枚举（演化方案 §二）：channel=发布通道画像，delay_model=升级时机画像
+EVOLUTION_CHANNEL_CHOICES = {"stable", "extended_stable"}
+EVOLUTION_DELAY_MODEL_CHOICES = {"mainstream", "laggard", "enterprise"}
+
 
 # ---------------------------------------------------------------------------
 # 嵌套 dataclass（与 §2 顶层字段一一对应，除标注可选外全部必填）
@@ -102,10 +106,61 @@ class Farbling:
 
 
 @dataclass
+class EvolutionSchedule:
+    """升级时机画像（演化方案 §二 schedule 块）。整块可缺省，字段取缺省值。
+
+    next_upgrade_not_before 为时机闸门日期（YYYY-MM-DD），None 表示未设闸门。
+    """
+
+    delay_model: str = "mainstream"              # mainstream / laggard / enterprise
+    next_upgrade_not_before: str | None = None   # YYYY-MM-DD，可空
+
+
+@dataclass
 class Evolution:
+    """演化数据模型（演化方案 §二）。
+
+    前三字段为既有锚定字段；current_chrome/channel/schedule/history 为演化扩展，
+    既有 persona.yaml（无新字段）加载后全部取缺省（current_chrome 回填 baseline_chrome）。
+    缺省口径（§二）：schedule/history 整块可缺省——不仅 yaml 缺段，显式构造传 None
+    （含 yaml 写 `schedule: null`）也在 __post_init__ 统一回填缺省实例
+    （schedule=delay_model mainstream、无时机闸门；history=空表），下游消费方
+    （校验/gate/CLI）可假设两字段永不为 None。
+    history 为履历条目 dict 列表（审计链，键见 §二示例：from/to/at/stable_release_date/
+    drift_pack/clr_after/diff_audit）；rollback=true 的回滚条目合法（方案 §七.3：
+    回滚本身违反单调增，仅允许 24h 内且诚实留痕），结构校验不拒绝，
+    由 count_rollbacks() 计数供 CLI/审计面警告展示。
+    """
+
     strategy: str            # 恒 anchor_chrome_version
-    baseline_chrome: str     # 形如 138.0.7204.0
+    baseline_chrome: str     # 形如 138.0.7204.0（出生基线，档案身份锚，不变）
     drift_policy: str        # 恒 follow_stable_diff
+    current_chrome: str = ""               # 当前版本；空串占位，_from_dict 回填 baseline
+    channel: str = "stable"                # stable / extended_stable
+    schedule: EvolutionSchedule = field(default_factory=EvolutionSchedule)
+    history: list[dict] = field(default_factory=list)   # 演化履历（审计链）
+
+    def __post_init__(self) -> None:
+        # current_chrome 缺省 = baseline_chrome（未演化的 persona 当前版=出生基线）
+        if not self.current_chrome:
+            self.current_chrome = self.baseline_chrome
+        # schedule/history 整块缺省（None）统一回填缺省实例（§二缺省口径，
+        # 见类 docstring）——加载期 _evolution_from_dict 与显式构造两条路径都覆盖
+        if self.schedule is None:
+            self.schedule = EvolutionSchedule()
+        if self.history is None:
+            self.history = []
+
+
+def count_rollbacks(evolution: Evolution) -> int:
+    """统计 history 中 rollback=true 的回滚条目数（演化方案 §七.3）。
+
+    回滚=切回旧镜像（冻结参数不变），本身违反版本单调增，故仅允许演化后 24h 内
+    且必须在 history 诚实留痕。结构校验不拒绝回滚条目，由本计数供 CLI/审计面
+    给出警告展示（>0 即提示人工复核）。
+    """
+    return sum(1 for h in evolution.history
+               if isinstance(h, dict) and h.get("rollback") is True)
 
 
 @dataclass
@@ -155,12 +210,53 @@ def _require(data: dict, key: str, path: str):
     return data[key]
 
 
+def _chrome_version_key(v: str) -> tuple[int, ...] | None:
+    """四段版本号 → 数值比较元组（如 138.0.7204.0 → (138, 0, 7204, 0)）。
+
+    非法格式返回 None。版本比较一律走元组数值比较，禁止字符串比较
+    （"138.0.7204.10" > "138.0.7204.2" 在字符串序下不成立）。
+    """
+    if not isinstance(v, str) or not CHROME_VERSION_RE.match(v):
+        return None
+    return tuple(int(seg) for seg in v.split("."))
+
+
+def _is_date_str(v) -> bool:
+    """YYYY-MM-DD 合法日期字符串判定。"""
+    if not isinstance(v, str):
+        return False
+    try:
+        datetime.strptime(v, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
+
+
 def _coerce_created_at(v) -> str:
     """created_at 容错：YAML 会把未加引号的 ISO8601 时间解析成 datetime，
     统一归一为 ISO8601 字符串（schema 定义为 str）。"""
     if isinstance(v, datetime):
         return v.isoformat()
     return v
+
+
+def _evolution_from_dict(evolution: dict) -> Evolution:
+    """dict → Evolution。扩展字段（§二）整块可缺省，缺省取默认值。"""
+    baseline = _require(evolution, "baseline_chrome", "evolution.baseline_chrome")
+    schedule_raw = evolution.get("schedule") or {}
+    schedule = EvolutionSchedule(
+        delay_model=schedule_raw.get("delay_model", "mainstream"),
+        next_upgrade_not_before=schedule_raw.get("next_upgrade_not_before"),
+    )
+    return Evolution(
+        strategy=_require(evolution, "strategy", "evolution.strategy"),
+        baseline_chrome=baseline,
+        drift_policy=_require(evolution, "drift_policy", "evolution.drift_policy"),
+        current_chrome=evolution.get("current_chrome") or baseline,
+        channel=evolution.get("channel", "stable"),
+        schedule=schedule,
+        history=list(evolution.get("history") or []),
+    )
 
 
 def _from_dict(d: dict) -> Persona:
@@ -224,11 +320,9 @@ def _from_dict(d: dict) -> Persona:
             seed=_require(farbling, "seed", "farbling.seed"),
             scope=_require(farbling, "scope", "farbling.scope"),
         ),
-        evolution=Evolution(
-            strategy=_require(evolution, "strategy", "evolution.strategy"),
-            baseline_chrome=_require(evolution, "baseline_chrome", "evolution.baseline_chrome"),
-            drift_policy=_require(evolution, "drift_policy", "evolution.drift_policy"),
-        ),
+        # 演化扩展字段（§二）：整块可缺省，缺省取默认值；
+        # current_chrome 缺省回填 baseline_chrome（未演化的 persona 当前版=出生基线）
+        evolution=_evolution_from_dict(evolution),
         proxy=d.get("proxy"),  # 本期恒 null
         storage=Storage(
             profile_volume=_require(storage, "profile_volume", "storage.profile_volume"),
@@ -384,15 +478,76 @@ def validate_structure(persona: Persona) -> list[str]:
         err("farbling.scope",
             f"须为 {sorted(FARBLING_SCOPE_CHOICES)} 的子集，实际为 {fa.scope!r}")
 
-    # evolution
+    # evolution（既有锚定字段 + §二演化扩展字段）
     ev = persona.evolution
     if not _is_str(ev.strategy) or ev.strategy != "anchor_chrome_version":
         err("evolution.strategy", f"恒为 anchor_chrome_version，实际为 {ev.strategy!r}")
-    if not _is_str(ev.baseline_chrome) or not CHROME_VERSION_RE.match(ev.baseline_chrome):
+    baseline_key = _chrome_version_key(ev.baseline_chrome)
+    if baseline_key is None:
         err("evolution.baseline_chrome",
             f"须为形如 138.0.7204.0 的四段版本号，实际为 {ev.baseline_chrome!r}")
     if not _is_str(ev.drift_policy) or ev.drift_policy != "follow_stable_diff":
         err("evolution.drift_policy", f"恒为 follow_stable_diff，实际为 {ev.drift_policy!r}")
+
+    # current_chrome：四段版本号，且 ≥ baseline（版本单调增语义，§二硬约束）
+    current_key = _chrome_version_key(ev.current_chrome)
+    if current_key is None:
+        err("evolution.current_chrome",
+            f"须为形如 138.0.7204.0 的四段版本号，实际为 {ev.current_chrome!r}")
+    elif baseline_key is not None and current_key < baseline_key:
+        err("evolution.current_chrome",
+            f"版本单调增约束：current_chrome {ev.current_chrome!r} 不得小于 "
+            f"baseline_chrome {ev.baseline_chrome!r}")
+
+    # channel：发布通道画像枚举（§二）
+    if not _is_str(ev.channel) or ev.channel not in EVOLUTION_CHANNEL_CHOICES:
+        err("evolution.channel",
+            f"须 ∈ {sorted(EVOLUTION_CHANNEL_CHOICES)}，实际为 {ev.channel!r}")
+
+    # schedule：升级时机画像（整块可缺省，缺省已回填默认）
+    sch = ev.schedule
+    if not _is_str(sch.delay_model) or sch.delay_model not in EVOLUTION_DELAY_MODEL_CHOICES:
+        err("evolution.schedule.delay_model",
+            f"须 ∈ {sorted(EVOLUTION_DELAY_MODEL_CHOICES)}，实际为 {sch.delay_model!r}")
+    if sch.next_upgrade_not_before is not None \
+            and not _is_date_str(sch.next_upgrade_not_before):
+        err("evolution.schedule.next_upgrade_not_before",
+            f"须为 YYYY-MM-DD 合法日期或 null，实际为 {sch.next_upgrade_not_before!r}")
+
+    # history：履历条目结构（rollback=true 条目合法——方案 §七.3 诚实留痕，
+    # 此处不拒绝；回滚计数警告由 count_rollbacks() 提供）
+    if not isinstance(ev.history, list):
+        err("evolution.history", f"须为履历条目列表，实际为 {ev.history!r}")
+    else:
+        for i, h in enumerate(ev.history):
+            prefix = f"evolution.history[{i}]"
+            if not isinstance(h, dict):
+                err(prefix, f"履历条目须为映射，实际为 {h!r}")
+                continue
+            from_key = _chrome_version_key(h.get("from"))
+            to_key = _chrome_version_key(h.get("to"))
+            if from_key is None:
+                err(f"{prefix}.from",
+                    f"须为形如 138.0.7204.0 的四段版本号，实际为 {h.get('from')!r}")
+            if to_key is None:
+                err(f"{prefix}.to",
+                    f"须为形如 138.0.7204.0 的四段版本号，实际为 {h.get('to')!r}")
+            if from_key is not None and to_key is not None and to_key <= from_key:
+                err(f"{prefix}.to",
+                    f"演化履历须 to>from（单调增），实际 {h.get('from')!r} → {h.get('to')!r}")
+            at = h.get("at")
+            # at 须为精确到秒的 ISO8601 时间（如 2026-08-20T09:30:00+08:00）
+            if not _is_str(at) or not re.match(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}", at):
+                err(f"{prefix}.at",
+                    f"须为精确到秒的 ISO8601 时间字符串，实际为 {at!r}")
+            else:
+                try:
+                    datetime.fromisoformat(at)
+                except ValueError:
+                    err(f"{prefix}.at", f"不是合法的 ISO8601 时间：{at!r}")
+            if "stable_release_date" in h and not _is_date_str(h["stable_release_date"]):
+                err(f"{prefix}.stable_release_date",
+                    f"须为 YYYY-MM-DD 合法日期，实际为 {h['stable_release_date']!r}")
 
     # proxy：本期恒 null 或字符串（格式合法性归 linter V10）
     if persona.proxy is not None and not _is_str(persona.proxy):

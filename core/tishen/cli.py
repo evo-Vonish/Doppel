@@ -8,6 +8,7 @@
     tishen lint <persona.yaml>
     tishen doctor [<id>] [--json]
     tishen pull [--json]                                 # M2 新增：拉取平台镜像（幂等）
+    tishen evolve <id> --pack <drift_pack.json>          # EVO-2：演化门禁检查（预览，不执行演化）
 
 M2 全局 --json（可放子命令前或后）：list --json 输出替身数组；
 start <id> --json 输出 {"id","state","host_port","embed_url","password"} 供外壳消费；
@@ -20,6 +21,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 from . import docker_ctl
@@ -614,6 +616,67 @@ def cmd_pull(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# evolve（EVO-2，演化方案 §四）：演化状态查看 + 时机门禁检查（预览）
+# ---------------------------------------------------------------------------
+
+def cmd_evolve(args) -> int:
+    """tishen evolve <id> --pack <drift_pack.json>。
+
+    只打印该 persona 当前演化状态（current/schedule/history 计数）并对指定
+    drift pack 跑时机门禁纯函数 check_evolve_gate（§四步骤 0/2）——
+    **不执行真实演化**（门禁序列步骤 1–8 编排属 EVO-3），不写任何状态。
+    """
+    from .evolution import check_evolve_gate, validate_drift_pack
+    from .persona import count_rollbacks
+
+    persona = _load_persona_or_exit(args.id)
+    ev = persona.evolution
+
+    print(f"替身 {args.id} 当前演化状态（演化方案 §二）：")
+    print(f"  基线版本 baseline_chrome : {ev.baseline_chrome}")
+    print(f"  当前版本 current_chrome  : {ev.current_chrome}")
+    print(f"  发布通道 channel         : {ev.channel}")
+    sch = ev.schedule
+    print(f"  时机画像 delay_model     : {sch.delay_model}")
+    print(f"  时机闸门 not_before      : {sch.next_upgrade_not_before or '（未设置）'}")
+    print(f"  演化履历 history         : {len(ev.history)} 条")
+    rollbacks = count_rollbacks(ev)
+    if rollbacks:
+        print(f"  警告：history 含 {rollbacks} 条 rollback=true 回滚记录"
+              "（方案 §七.3：回滚违反单调增，仅允许 24h 内且诚实留痕，请人工复核）")
+
+    # drift pack 加载与结构校验（§三）
+    pack_path = Path(args.pack)
+    if not pack_path.exists():
+        print(f"错误：drift pack 文件不存在：{pack_path}", file=sys.stderr)
+        return 2
+    try:
+        pack = json.loads(pack_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        print(f"错误：drift pack 不是合法 JSON：{e}", file=sys.stderr)
+        return 2
+    pack_errors = validate_drift_pack(pack)
+    if pack_errors:
+        print(f"drift pack 结构校验未通过（{len(pack_errors)} 条）：")
+        for msg in pack_errors:
+            print(f"  [PACK] {msg}")
+        return 1
+
+    # 时机门禁（预览）：纯函数，今日日期取自本机时钟
+    print(f"演化门禁检查（预览）——drift pack {pack['from']} → {pack['to']}：")
+    ok, reasons = check_evolve_gate(persona, pack, today=date.today())
+    if ok:
+        print("  [放行] 四条时机断言全部通过（时机闸门 / 单调增 / 不超前发布日 / OS×版本组合）。")
+        print("  说明：本命令只做门禁预览，不执行真实演化；门禁序列编排（§四步骤 1–8）属 EVO-3。")
+        return 0
+    print(f"  [拒绝] {len(reasons)} 条断言未通过：")
+    for r in reasons:
+        print(f"    - {r}")
+    print("  说明：门禁拒绝=合法滞留当前版本（§四步骤 7），本命令不执行真实演化。")
+    return 1
+
+
+# ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
 
@@ -677,6 +740,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("pull", parents=[json_parent],
                        help="拉取替身平台镜像（已存在则跳过；M2 首启引导用）")
     p.set_defaults(func=cmd_pull)
+
+    p = sub.add_parser("evolve",
+                       help="演化门禁检查（预览）：打印演化状态 + 对 drift pack 跑时机门禁，不执行演化")
+    p.add_argument("id", help="替身 ID（p_ 开头）")
+    p.add_argument("--pack", required=True,
+                   help="drift pack JSON 路径（演化方案 §三数据件）")
+    p.set_defaults(func=cmd_evolve)
 
     return parser
 
