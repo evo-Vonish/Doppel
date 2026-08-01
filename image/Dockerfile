@@ -11,9 +11,14 @@ FROM ${UBUNTU} AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# VPN/proxy links can transiently refuse APT's pipelined connections. Keep the
+# mirror portable while making every package transaction retry without HTTP
+# pipelining.
+ARG APT_NETWORK_OPTS="-o Acquire::Retries=5 -o Acquire::http::Pipeline-Depth=0"
+
 # 虚拟显示器（xserver-xorg-video-dummy，分辨率由 persona_bake 运行时用 xrandr 调整）、
 # pulseaudio/dbus-x11、GStreamer 全套与 x264/VP8 编码器（M2 neko 推流预留）
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get ${APT_NETWORK_OPTS} update && apt-get ${APT_NETWORK_OPTS} install -y --no-install-recommends \
     xserver-xorg-core \
     xserver-xorg-video-dummy \
     x11-xserver-utils \
@@ -39,7 +44,8 @@ RUN printf '/usr/lib/x86_64-linux-gnu\n/usr/lib/i386-linux-gnu\n' > /etc/ld.so.c
     && mkdir -p /usr/share/glvnd/egl_vendor.d \
     && printf '{\n    "file_format_version" : "1.0.0",\n    "ICD" : {\n        "library_path" : "libEGL_nvidia.so.0"\n    }\n}\n' \
         > /usr/share/glvnd/egl_vendor.d/10_nvidia.json \
-    && apt-get update && apt-get install -y --no-install-recommends \
+    && apt-get ${APT_NETWORK_OPTS} update \
+    && apt-get ${APT_NETWORK_OPTS} install -y --no-install-recommends \
     libglvnd0 \
     libglvnd-dev \
     libegl1 \
@@ -55,7 +61,7 @@ FROM runtime AS i18n
 # 字体超集全量预装，运行时由 persona_bake 按 persona.yaml 的 fonts.pack/extras
 # 通过 fontconfig 模板「激活子集」而非堆装（坑位 7：装了什么字体也是可探测面）。
 # fcitx5 三环境变量由 persona_bake 在 Chrome 启动前 export（坑位 4）。
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get ${APT_NETWORK_OPTS} update && apt-get ${APT_NETWORK_OPTS} install -y --no-install-recommends \
     fonts-noto-cjk \
     fonts-wqy-microhei \
     fonts-liberation \
@@ -74,14 +80,14 @@ ARG CHROME_VERSION=stable
 
 # 从 Google 官方源安装 Chrome stable；安装后把精确版本落档到 /etc/tishen/chrome_version，
 # 该文件是 evolution 基线读取点，也是容器内 linter V6 的版本锚（SPEC §5/§6）。
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get ${APT_NETWORK_OPTS} update && apt-get ${APT_NETWORK_OPTS} install -y --no-install-recommends \
     curl \
     ca-certificates \
     wget \
     gnupg \
     && curl -fSL -o /tmp/google-chrome.deb \
     https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
-    && apt-get install -y --no-install-recommends /tmp/google-chrome.deb \
+    && apt-get ${APT_NETWORK_OPTS} install -y --no-install-recommends /tmp/google-chrome.deb \
     && rm -f /tmp/google-chrome.deb \
     && mkdir -p /etc/tishen \
     && google-chrome --version | awk '{print $3}' > /etc/tishen/chrome_version \
@@ -97,7 +103,7 @@ ARG CHROME_VERSION=stable
 # 烘焙器运行时依赖：python3 + PyYAML（契约白名单）；
 # 观测脚手架：tcpdump（环形抓包）、age（日志/keylog 加密落盘工具链，R11）；
 # tshark：M3 观测链路（pcap → TLS 解密 → 事件流）需要，M2 由 Coder C 代装（SPEC-M2M3 §1.1）
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get ${APT_NETWORK_OPTS} update && apt-get ${APT_NETWORK_OPTS} install -y --no-install-recommends \
     python3 \
     python3-pip \
     python3-yaml \
