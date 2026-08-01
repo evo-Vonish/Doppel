@@ -51,6 +51,7 @@ class ObservEventSchema(BaseModel):
     targetHost: str
     summary: str
     alertLevel: int                              # 0=普通 1=提示 2=警告 3=危险
+    engineTags: list[str]                        # 判别引擎标签（v0.2；非法 JSON → []）
     detail: dict[str, str]                       # 其余原始字段平铺（None→""，int→str）
 
 
@@ -65,6 +66,7 @@ class AlertSchema(BaseModel):
     personaId: str
     host: str
     evidence: list[str]
+    engineTags: list[str]                        # 判别引擎标签（v0.2；与源事件同源解析）
     ts: str
     acknowledged: bool
 
