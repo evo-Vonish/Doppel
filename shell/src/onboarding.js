@@ -1,7 +1,7 @@
 // 替身（Tishen）首启五步引导（M2 方案 §五，SPEC-M2M3 §1.4）。
 // 渲染进程脚本（无 Node 能力，经 window.tishen 桥接触达主进程）。
 //
-// 五步：检测 Docker → 检测 /dev/dri → 拉取镜像 → 建第一个替身 → 开窗口。
+// 五步：检测 Docker → 检测 GPU 透传 → 拉取镜像 → 建第一个替身 → 开窗口。
 // 纪律：每步只一个主按钮；任一步失败可从失败步单步重试，不要求重来；
 // 文案中文人话，禁止堆栈跟踪与英文原文上屏。
 
@@ -34,7 +34,7 @@
       button: "开始检测",
       async run(ctx) {
         const report = await window.tishen.runDoctor();
-        const item = report.checks.find((c) => c.item.includes("/dev/dri"));
+        const item = report.checks.find((c) => c.item.includes("GPU 透传"));
         if (!item || !item.ok) {
           // R2 降级档明示义务：告知风险但用户确认后继续，不阻塞
           const accepted = window.confirm(

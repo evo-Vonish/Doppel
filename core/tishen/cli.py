@@ -488,7 +488,7 @@ def _doctor_header(doc: _Doctor, title: str) -> None:
 
 
 def _doctor_global(doc: _Doctor) -> None:
-    """全局检查：docker 可用性、/dev/dri、TISHEN_HOME 结构。"""
+    """全局检查：docker 可用性、GPU 透传后端、TISHEN_HOME 结构。"""
     _doctor_header(doc, "── 全局环境检查 ──")
     try:
         ok, info = docker_ctl.docker_available()
@@ -497,8 +497,15 @@ def _doctor_global(doc: _Doctor) -> None:
     doc.check(ok, "docker 守护进程可用", detail=info,
               fix="安装并启动 docker（如 apt install docker.io 并 systemctl start docker）；"
                   "确认当前用户在 docker 组内")
-    doc.check(Path("/dev/dri").exists(), "/dev/dri 存在（GPU 透传设备）",
-              fix="确认宿主机 GPU 驱动已安装且暴露 DRI 设备；无 GPU 环境无法运行替身容器")
+    gpu_backend = docker_ctl.detect_gpu_backend()
+    gpu_detail = {
+        "wsl": "WSL2 /dev/dxg + /usr/lib/wsl + /mnt/wslg",
+        "dri": "Linux /dev/dri",
+        "missing": "未找到 /dev/dri 或完整 WSL2 GPU 三件套",
+    }[gpu_backend]
+    doc.check(gpu_backend != "missing", "GPU 透传设备可用", detail=gpu_detail,
+              fix="Linux 请确认 /dev/dri；Windows WSL2 请确认 /dev/dxg、"
+                  "/usr/lib/wsl、/mnt/wslg 三者同时存在")
     home = tishen_home()
     doc.check(home.is_dir(), f"TISHEN_HOME 目录存在", detail=str(home),
               fix=f"执行 mkdir -p {home}/personas，或先运行一次 `tishen create`")

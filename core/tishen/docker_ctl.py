@@ -5,7 +5,7 @@
 - 不捕获异常吃掉错误——docker 不存在等 OSError 直接向上抛，
   由 CLI 层决定如何向用户报告；
 - docker run 组装严格对应 M1 方案 §6 的运行时基线：
-  --shm-size=2g、--device /dev/dri、--cap-add NET_RAW/NET_ADMIN、
+  --shm-size=2g、宿主 GPU 设备、--cap-add NET_RAW/NET_ADMIN、
   profile/log 卷挂载、persona.yaml 只读挂载、容器名 ts_<id>；
 - M2 流层追加（SPEC-M2M3 §1.3）：-p 127.0.0.1:0:8080（neko 只发布到宿主 loopback
   的随机空闲端口）、-e NEKO_PASSWORD=<创建时生成的随机口令>；
@@ -30,6 +30,12 @@ DEFAULT_IMAGE_TAG = "tishen/platform:latest-stable"
 # neko 流服务容器内监听端口（与镜像 ENV NEKO_BIND=:8080 对应）
 NEKO_CONTAINER_PORT = 8080
 
+# Windows 11 / WSL2 的 GPU 透传不是 Linux DRI 设备。三件套必须同时存在：
+# dxg 字符设备、Windows GPU 用户态库、WSLg 共享运行目录。
+WSL_GPU_DEVICE = Path("/dev/dxg")
+WSL_GPU_LIB_DIR = Path("/usr/lib/wsl")
+WSL_GPU_RUNTIME_DIR = Path("/mnt/wslg")
+
 
 def container_name(persona_id: str) -> str:
     """容器命名约定：ts_<persona_id>。"""
@@ -51,6 +57,32 @@ def generate_neko_password() -> str:
     return secrets.token_hex(16)
 
 
+def detect_gpu_backend() -> str:
+    """探测宿主 GPU 透传后端：wsl、dri 或 missing。"""
+    if (WSL_GPU_DEVICE.exists()
+            and WSL_GPU_LIB_DIR.is_dir()
+            and WSL_GPU_RUNTIME_DIR.is_dir()):
+        return "wsl"
+    if Path("/dev/dri").exists():
+        return "dri"
+    return "missing"
+
+
+def gpu_passthrough_args(backend: str | None = None) -> list[str]:
+    """返回 Docker GPU 参数；missing 保留既有 DRI 失败路径供 doctor 提示。"""
+    selected = backend or detect_gpu_backend()
+    if selected == "wsl":
+        return [
+            "--device", "/dev/dxg",
+            "--mount", "type=bind,source=/usr/lib/wsl,target=/usr/lib/wsl,readonly",
+            "--mount", "type=bind,source=/mnt/wslg,target=/mnt/wslg,readonly",
+            "--env", "LD_LIBRARY_PATH=/usr/lib/wsl/lib",
+        ]
+    if selected in {"dri", "missing"}:
+        return ["--device", "/dev/dri"]
+    raise ValueError(f"未知 GPU 后端：{selected}")
+
+
 def build_run_command(persona: Persona, image_tag: str,
                       personas_dir: str | Path,
                       neko_password: str | None = None) -> list[str]:
@@ -61,7 +93,7 @@ def build_run_command(persona: Persona, image_tag: str,
         "docker", "run", "-d",
         "--name", container_name(pid),
         f"--shm-size={SHM_SIZE}",
-        "--device", "/dev/dri",                       # GPU 透传（R2）
+        *gpu_passthrough_args(),                        # GPU 透传（R2；Linux/WSL2）
         "--cap-add", "NET_RAW", "--cap-add", "NET_ADMIN",  # 观测抓包所需
         "--security-opt", "seccomp=default",          # 安全基线：不加 --no-sandbox
         "-v", f"{persona.storage.profile_volume}:/persona/profile",
