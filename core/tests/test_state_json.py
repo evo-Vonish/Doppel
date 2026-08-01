@@ -144,6 +144,9 @@ def test_build_run_command_neko_args(home):
     # M1 基线不回归
     assert f"--shm-size={docker_ctl.SHM_SIZE}" in argv
     assert "--no-sandbox" not in " ".join(argv)
+    # Docker 默认 seccomp 通过省略选项生效；seccomp=default 会被误当成文件路径。
+    assert "seccomp=default" not in argv
+    assert "seccomp=unconfined" not in argv
 
 
 def test_build_run_command_without_password_keeps_m1(home):
