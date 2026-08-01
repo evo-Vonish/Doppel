@@ -72,7 +72,7 @@ def test_offline_fallback_create_persona(monkeypatch):
 # create_persona 全流程
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("region", ["CN", "HK", "TW", "JP", "US", "GB", "DE"])
+@pytest.mark.parametrize("region", ["CA", "CN", "HK", "TW", "JP", "US", "GB", "DE"])
 def test_create_persona_passes_lint_for_all_regions(region):
     p = create_persona("全属地替身", region, STABLE, seed=3)
     ctx = LintContext(current_stable_chrome=STABLE, detected_ip_region=region)
@@ -80,6 +80,14 @@ def test_create_persona_passes_lint_for_all_regions(region):
     # schema 全字段填充：结构校验也必须零错误
     from tishen.persona import validate_structure
     assert validate_structure(p) == []
+
+
+def test_create_persona_ca_defaults_to_vancouver_grid():
+    p = create_persona("温哥华替身", "CA", STABLE, seed=3)
+    assert p.region.detected_ip_region == "CA"
+    assert p.region.timezone == "America/Vancouver"
+    assert p.region.locale == "en-CA"
+    assert p.region.languages[:2] == ["en-CA", "en"]
 
 
 def test_create_persona_auto_uses_ip_region():
