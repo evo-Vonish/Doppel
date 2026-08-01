@@ -10,7 +10,7 @@ def test_runtime_installs_xcvt_for_dynamic_modelines():
         "FROM runtime AS i18n", 1
     )[0]
     display_packages = runtime_stage.split(
-        "apt-get install -y --no-install-recommends", 1
+        "install -y --no-install-recommends", 1
     )[1].split("&& rm -rf /var/lib/apt/lists/*", 1)[0]
 
     packages = {
@@ -18,3 +18,13 @@ def test_runtime_installs_xcvt_for_dynamic_modelines():
     }
 
     assert "xcvt" in packages
+
+
+def test_all_apt_transactions_retry_without_http_pipelining():
+    dockerfile = (REPO_ROOT / "image" / "Dockerfile").read_text(encoding="utf-8")
+    apt_commands = [line for line in dockerfile.splitlines() if "apt-get" in line]
+
+    assert apt_commands
+    assert all("apt-get ${APT_NETWORK_OPTS}" in line for line in apt_commands)
+    assert "Acquire::Retries=5" in dockerfile
+    assert "Acquire::http::Pipeline-Depth=0" in dockerfile
