@@ -44,6 +44,10 @@ XORG_RUNTIME_CONFIG = "/run/tishen/xorg-persona.conf"
 NEKO_BIN = "/opt/neko/neko"                     # L5 流层安装的 neko v2 server 二进制
 DISPLAY_ID = ":0"                               # 虚拟显示器编号
 X_READY_TIMEOUT = 15                            # 等待 X 就绪秒数
+CHROME_UID = 1000                               # ubuntu:noble 镜像内固定用户
+CHROME_GID = 1000
+CHROME_HOME = "/home/ubuntu"
+CHROME_RUNTIME_DIR = f"/run/user/{CHROME_UID}"
 
 # 后台子进程登记表：名称 → Popen，供第 10 步 SIGTERM 收尾按序终止
 _CHILDREN: dict[str, subprocess.Popen] = {}
@@ -99,6 +103,47 @@ def spawn(name: str, argv: list[str], desc: str) -> None:
     except OSError as exc:
         fail(f"{desc}启动失败：{exc}")
     log(f"{desc}已启动（pid={_CHILDREN[name].pid}）")
+
+
+def _chown_tree_once(path: Path) -> None:
+    """首次迁移 named volume 所有权；根目录已属 Chrome 用户时跳过全树扫描。"""
+    path.mkdir(parents=True, exist_ok=True)
+    if path.stat().st_uid == CHROME_UID and path.stat().st_gid == CHROME_GID:
+        return
+    try:
+        for root, dirs, files in os.walk(path):
+            root_path = Path(root)
+            for name in dirs:
+                os.chown(root_path / name, CHROME_UID, CHROME_GID, follow_symlinks=False)
+            for name in files:
+                os.chown(root_path / name, CHROME_UID, CHROME_GID, follow_symlinks=False)
+        # 根目录最后交接：若中途失败，下次启动仍会重试全树迁移。
+        os.chown(path, CHROME_UID, CHROME_GID, follow_symlinks=False)
+    except OSError as exc:
+        fail(f"Chrome 用户目录权限迁移失败（{path}）：{exc}")
+
+
+def prepare_chrome_user() -> dict[str, str]:
+    """准备非 root Chrome 的持久化目录与进程环境，保留 setuid sandbox。"""
+    env = os.environ.copy()
+    env.update({
+        "HOME": CHROME_HOME,
+        "USER": "ubuntu",
+        "LOGNAME": "ubuntu",
+        "XDG_RUNTIME_DIR": CHROME_RUNTIME_DIR,
+    })
+    if _DRY_RUN:
+        log(f"[dry-run] 将准备 Chrome 非 root 运行用户：uid={CHROME_UID}, gid={CHROME_GID}, HOME={CHROME_HOME}")
+        return env
+    for path in (Path("/persona/profile"),
+                 Path("/persona/logs/sslkeys"),
+                 Path("/persona/logs/hook")):
+        _chown_tree_once(path)
+    runtime_dir = Path(CHROME_RUNTIME_DIR)
+    _chown_tree_once(runtime_dir)
+    runtime_dir.chmod(0o700)
+    log(f"Chrome 运行用户已准备：uid={CHROME_UID}, gid={CHROME_GID}, HOME={CHROME_HOME}")
+    return env
 
 
 # ── 字体包激活块（模板占位符 @FONT_PACK@ 的注入内容）──────────────────────
@@ -448,7 +493,9 @@ HOOK_PAYLOAD_LOG = "/persona/logs/hook/samples.jsonl"  # payload_sample JSONL �
 HOOK_EXT_DIR = "/opt/tishen/hook-ext"            # MV3 hook 扩展目录（镜像内固化）
 HOOK_NATIVE_HOST = "/opt/tishen/hook/tishen_native_host.py"   # 镜像内绝对路径
 HOOK_NATIVE_MANIFEST_TEMPLATE = "/opt/tishen/hook/tishen_native_host.json"
-HOOK_NATIVE_MANIFEST_DIR = "~/.config/chromium/NativeMessagingHosts"
+# Google Chrome for Linux 的 system-wide 固定目录；容器内单 persona，root 写入且
+# Chrome 用户只读，避免自定义 --user-data-dir 改变 user-level 查找根目录。
+HOOK_NATIVE_MANIFEST_DIR = "/etc/opt/chrome/native-messaging-hosts"
 # E-IV 件一（I1）：native host argv 包装脚本（manifest path 不能带参数，
 # persona_id/session_id 固化进脚本体）；扩展 key 入镜像（I2），扩展 id 由 key 派生即恒定
 HOOK_WRAPPER = "/run/tishen/native-host-wrapper.sh"
@@ -499,12 +546,36 @@ def _write_native_host_wrapper(persona, session_id: str) -> str | None:
         wrapper = Path(HOOK_WRAPPER)
         wrapper.parent.mkdir(parents=True, exist_ok=True)
         wrapper.write_text(body, encoding="utf-8")
-        wrapper.chmod(0o700)
+        # root:ubuntu + 0750：Chrome 用户可执行但不可篡改当次 argv 包装脚本。
+        os.chown(wrapper, 0, CHROME_GID)
+        wrapper.chmod(0o750)
     except OSError as exc:
         log(f"native host 包装脚本生成失败（{exc}），降级跳过（manifest 将直连 host 路径），bake 继续")
         return None
-    log(f"native host 包装脚本已生成：{HOOK_WRAPPER}（0700，persona_id={persona.meta.id}，session_id={session_id}）")
+    log(f"native host 包装脚本已生成：{HOOK_WRAPPER}（root:ubuntu 0750，persona_id={persona.meta.id}，session_id={session_id}）")
     return str(wrapper)
+
+
+def _handoff_hook_socket(timeout: float = 5.0) -> None:
+    """等待 root hook bus 绑定 0600 socket，再把客户端访问权交给 Chrome 用户。"""
+    deadline = time.monotonic() + timeout
+    socket_path = Path(HOOK_SOCKET)
+    while time.monotonic() < deadline:
+        try:
+            if socket_path.exists():
+                os.chown(socket_path, CHROME_UID, CHROME_GID)
+                socket_path.chmod(0o600)
+                log(f"hook socket 已交接给 Chrome 用户：{HOOK_SOCKET}（0600）")
+                return
+        except OSError as exc:
+            log(f"hook socket 权限交接失败（{exc}），native hook 降级，bake 继续")
+            return
+        proc = _CHILDREN.get("hook_bus")
+        if proc is not None and proc.poll() is not None:
+            log(f"hook 总线提前退出（rc={proc.returncode}），native hook 降级，bake 继续")
+            return
+        time.sleep(0.05)
+    log(f"hook socket 等待超时（{HOOK_SOCKET}），native hook 降级，bake 继续")
 
 
 def _extension_id(key_path: str) -> str:
@@ -538,6 +609,7 @@ def step7_7_hook(persona) -> None:
             Path("/persona/logs/hook").mkdir(parents=True, exist_ok=True)
             _CHILDREN["hook_bus"] = subprocess.Popen(hook_argv)
             log(f"JS hook 事件总线已启动（pid={_CHILDREN['hook_bus'].pid}，socket={HOOK_SOCKET}）")
+            _handoff_hook_socket()
         except OSError as exc:
             log(f"hook 总线启动失败（{exc}），降级跳过，bake 继续")
 
@@ -549,7 +621,7 @@ def step7_7_hook(persona) -> None:
     manifest_path = manifest_dir / "tishen_native_host.json"
     if _DRY_RUN:
         log(f"[dry-run] 将生成 native host 包装脚本 → {HOOK_WRAPPER}"
-            f"（0700，persona_id={persona.meta.id}，session_id={session_id}）")
+            f"（root:ubuntu 0750，persona_id={persona.meta.id}，session_id={session_id}）")
         log(f"[dry-run] 将安装 native manifest → {manifest_path}（HOST_PATH={HOOK_WRAPPER}，"
             f"EXT_ID 由 {HOOK_EXT_KEY} 派生）")
         return
@@ -697,6 +769,7 @@ def main() -> None:
     _boot_mark("fcitx5")
     step7_observability(monitor_pcap)
     _boot_mark("observ")
+    chrome_env = prepare_chrome_user()
     step7_6_engine(persona)  # SPEC-E §8：观测守护之后加挂引擎守护（失败降级跳过）
     step7_7_hook(persona)  # SPEC-E3 §2.3：引擎守护之后加挂 JS hook 层（失败降级跳过）
     step7_5_neko()
@@ -720,7 +793,13 @@ def main() -> None:
     signal.signal(signal.SIGINT, _shutdown)
     log(f"启动 Chrome：{launch_line}")
     try:
-        _CHILDREN["chrome"] = subprocess.Popen(chrome_argv)
+        _CHILDREN["chrome"] = subprocess.Popen(
+            chrome_argv,
+            env=chrome_env,
+            user=CHROME_UID,
+            group=CHROME_GID,
+            extra_groups=(),
+        )
     except OSError as exc:
         fail(f"启动 Chrome 失败：{exc}")
     _boot_mark("chrome_launch")  # Chrome 已拉起（SPEC-M5 §5 末段）

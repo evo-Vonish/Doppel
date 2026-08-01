@@ -5,7 +5,7 @@
 - 不捕获异常吃掉错误——docker 不存在等 OSError 直接向上抛，
   由 CLI 层决定如何向用户报告；
 - docker run 组装严格对应 M1 方案 §6 的运行时基线：
-  --shm-size=2g、宿主 GPU 设备、--cap-add NET_RAW/NET_ADMIN、
+  --shm-size=2g、宿主 GPU 设备、--cap-add NET_RAW/NET_ADMIN/SYS_ADMIN、
   profile/log 卷挂载、persona.yaml 只读挂载、容器名 ts_<id>；
 - M2 流层追加（SPEC-M2M3 §1.3）：-p 127.0.0.1:0:8080（neko 只发布到宿主 loopback
   的随机空闲端口）、-e NEKO_PASSWORD=<创建时生成的随机口令>；
@@ -95,6 +95,9 @@ def build_run_command(persona: Persona, image_tag: str,
         f"--shm-size={SHM_SIZE}",
         *gpu_passthrough_args(),                        # GPU 透传（R2；Linux/WSL2）
         "--cap-add", "NET_RAW", "--cap-add", "NET_ADMIN",  # 观测抓包所需
+        # Chrome 以非 root 用户运行且不使用 --no-sandbox；Docker 默认能力集缺少
+        # setuid sandbox 建立 PID/network namespace 所需的 SYS_ADMIN。
+        "--cap-add", "SYS_ADMIN",
         "-v", f"{persona.storage.profile_volume}:/persona/profile",
         "-v", f"{persona.storage.log_volume}:/persona/logs",
         "-v", f"{yaml_path}:/persona/persona.yaml:ro",     # persona 只读挂载
