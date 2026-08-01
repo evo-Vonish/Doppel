@@ -113,3 +113,12 @@ def test_main_launches_chrome_as_ubuntu_without_forbidden_flags():
     assert 'FORBIDDEN_FLAGS = ("--no-sandbox", "--remote-debugging-port")' in source
     launch_section = source[source.index('log(f"启动 Chrome') : source.index('_boot_mark("chrome_launch")')]
     assert "--no-sandbox" not in launch_section
+
+
+def test_hook_bus_removes_stale_volume_socket_before_spawn_and_handoff():
+    source = BAKE_PATH.read_text(encoding="utf-8")
+    hook_section = source[source.index("def step7_7_hook") : source.index("# ── 第 7.5 步")]
+    unlink = 'Path(HOOK_SOCKET).unlink(missing_ok=True)'
+    spawn = '_CHILDREN["hook_bus"] = subprocess.Popen(hook_argv)'
+    handoff = "_handoff_hook_socket()"
+    assert hook_section.index(unlink) < hook_section.index(spawn) < hook_section.index(handoff)
