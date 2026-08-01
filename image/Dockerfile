@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xserver-xorg-video-dummy \
     x11-xserver-utils \
     x11-utils \
+    xcvt \
     pulseaudio \
     dbus-x11 \
     libgstreamer1.0-0 \
