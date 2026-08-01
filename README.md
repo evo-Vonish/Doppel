@@ -1,107 +1,109 @@
 # Doppel（替身 Tishen）
 
-> **替身已启动，目标无所遁形。**
+**English** | [简体中文](./README.zh-CN.md)
+
+> **The double is running. Nothing hides.**
 > Run the web inside an isolated double of yourself — and watch everything the web tries to do to it.
 
-[![tests](https://img.shields.io/badge/pytest-479%20passed-brightgreen)](#-质量基线) [![node tests](https://img.shields.io/badge/node--test-25%20passed-brightgreen)](#-质量基线) [![python](https://img.shields.io/badge/python-3.11%2B-blue)](#) [![status](https://img.shields.io/badge/阶段-垂直切片完成·真机核验待执行-orange)](#-路线图) [![license](https://img.shields.io/badge/license-待定-lightgrey)](#-开源与合规)
+[![tests](https://img.shields.io/badge/pytest-479%20passed-brightgreen)](#-quality-baseline) [![node tests](https://img.shields.io/badge/node--test-25%20passed-brightgreen)](#-quality-baseline) [![python](https://img.shields.io/badge/python-3.11%2B-blue)](#) [![status](https://img.shields.io/badge/status-vertical%20slice%20done-orange)](#-roadmap) [![license](https://img.shields.io/badge/license-TBD-lightgrey)](#-open-source--compliance)
 
-**Doppel（代号 tishen，替身）** 是一套**本地优先的算法浏览器系统**，由两个互为表里的子系统组成：
+**Doppel (codename *tishen*, 替身)** is a **local-first algorithmic browser** built from two complementary subsystems:
 
-| 子系统 | 一句话职责 |
+| Subsystem | What it does |
 |---|---|
-| **替身** | 让网页跑在预置好完整身份环境的本地容器沙盒里——时区、locale、字体、GPU、Chrome 指纹全部按规格烘焙且跨层自洽，网站拿到的是一套干净的 Linux 桌面分身数据，而非你的真实环境 |
-| **无所遁形** | 最大化网页行为可见性：谁在何时存了什么 Cookie、调用了什么指纹 API、把什么数据发给了谁——附脚本归因与证据链；判别引擎对追踪、指纹采集与挖矿脚本分级告警 |
+| **The Double (替身)** | Runs websites inside a local container sandbox baked with a complete, self-consistent identity — timezone, locale, fonts, GPU profile and Chrome fingerprint are all provisioned from spec. Websites see a clean Linux desktop *double* of you, never your real environment |
+| **Panopticon (无所遁形)** | Maximizes visibility into web page behavior: who stores which cookie, calls which fingerprinting API, sends what data to whom — with script attribution and a full evidence chain. A detection engine scores and alerts on tracking, fingerprinting and cryptomining |
 
-**设计哲学**：不撒谎，直接造真的。不篡改浏览器 API（篡改引入的矛盾可被检测），而是从头构建真实自洽的浏览环境。观测走旁路（TLS 密钥导出 + 抓包解密），网络链路永远只读。
+**Design philosophy**: *Don't lie — build the real thing.* We never patch browser APIs (patching introduces contradictions that detectors can find); we build genuinely coherent environments from scratch. Observation is passive (TLS key export + packet capture) — the network path stays strictly read-only.
 
-## ✦ 特性
+## ✦ Features
 
-- **规格驱动**：一份声明式 `persona.yaml` 同时驱动替身环境烘焙与监测基线，任何偏离规格的行为即为警报
-- **三层判别引擎**：实体归因（域名→实体底表）× 请求匹配（ABP 规则引擎，EasyPrivacy 支持率 96.6%）× 行为启发式（挖矿/指纹双评分器）——**单个可疑 API 调用永不触发高级告警**，级别 3 必须多信号交叉 + 跨站 ≥3 闸门
-- **挖矿检测四层防线**：行为评分（含学术实证不可规避的 stack-based 信号）→ L2 载荷确认（静态分析 + WASM 指令指纹）→ L3 可见性金丝雀 → 通用恶意 JS 扩展
-- **JS hook 层**：容器内 MV3 扩展经 native messaging 回传六类脚本事件（api_call/worker_spawn/wasm_load/storage_write/block_action/visibility_probe）——观测不干预页面，零 CDP（不引入可检测痕迹）
-- **对抗测试体系**：CLR（自洽性露馅率）= 0 北极星指标，82 条跨层一致性清单（CreepJS/sannysoft/BrowserLeaks/incolumitas/自研五来源）
-- **证据链完整**：每条告警可溯源到规则 id、实体、行为信号与加密载荷分片
-- **控制台前端**：精密仪器控制台设计（React 19 + Vite 7 + Tailwind + shadcn/ui），双模式密度（普通/专家）
+- **Spec-driven**: one declarative `persona.yaml` drives both environment baking and the monitoring baseline — any deviation from spec is an alert
+- **Three-layer detection engine**: entity attribution (domain→entity dataset) × request matching (ABP rule engine, 96.6% EasyPrivacy coverage) × behavioral heuristics (mining/fingerprinting scorers). **A single suspicious API call never triggers a high-severity alert** — level 3 requires multiple independent signals plus a ≥3-site cross-site gate
+- **Four-layer cryptomining defense**: behavioral scoring (incl. academically-proven stack-based signals that cannot be evaded) → L2 payload confirmation (static analysis + WASM instruction fingerprints) → L3 visibility canaries → generic malicious-JS coverage
+- **JS hook layer**: an in-container MV3 extension reports six script-side event types (api_call / worker_spawn / wasm_load / storage_write / block_action / visibility_probe) via native messaging — observation never interferes with the page, zero CDP (no detectable traces)
+- **Adversarial testing**: CLR (Consistency Leak Rate) = 0 as the north-star metric, with an 82-item cross-layer consistency checklist (CreepJS / sannysoft / BrowserLeaks / incolumitas / self-developed)
+- **Full evidence chain**: every alert traces back to rule ids, entities, behavioral signals and encrypted payload shards
+- **Console UI**: precision-instrument design (React 19 + Vite 7 + Tailwind + shadcn/ui), dual-density modes (default / expert)
 
-## ✦ 架构
+## ✦ Architecture
 
 ```mermaid
 flowchart LR
-    subgraph 容器沙盒
-        Chrome[Chrome 浏览器<br/>persona.yaml 烘焙]
-        Hook[JS hook 层<br/>MV3 扩展]
-        Obs[观测守护<br/>SSLKEYLOG + tcpdump]
+    subgraph Container Sandbox
+        Chrome[Chrome browser<br/>baked from persona.yaml]
+        Hook[JS hook layer<br/>MV3 extension]
+        Obs[Observation daemon<br/>SSLKEYLOG + tcpdump]
         Chrome --- Hook
         Chrome --- Obs
     end
-    subgraph 宿主
-        Bus[hook_bus 事件总线<br/>Unix socket]
+    subgraph Host
+        Bus[hook_bus event bus<br/>Unix socket]
         Store[(events.db<br/>WAL)]
-        Engine[判别引擎<br/>E1 归因 · E2 匹配 · E3 行为]
-        API[API 桥<br/>FastAPI · 127.0.0.1]
-        UI[控制台前端]
+        Engine[Detection engine<br/>E1 attribution · E2 matching · E3 behavior]
+        API[API bridge<br/>FastAPI · 127.0.0.1]
+        UI[Console UI]
         Hook -->|native messaging| Bus
         Obs --> Store
         Bus --> Store
         Store --> Engine
-        Engine -->|回写 alert_level/tags| Store
+        Engine -->|writes back alert_level/tags| Store
         Store --> API --> UI
     end
 ```
 
-## ✦ 仓库结构
+## ✦ Repository Layout
 
 ```
-core/tishen/          # Python 核心
-  ├── cli.py          # 编排 CLI（create/start/stop/lint/doctor/...）
-  ├── persona.py      # persona.yaml 规格与校验
-  ├── linter.py       # 出厂门禁 V1–V10
-  ├── observ/         # 观测流水线（keylog 对齐/解密/事件库/daemon/hook_bus）
-  ├── engine/         # 判别引擎（entity/rules/behavior/scorer/daemon/payload/datasets）
-  ├── adversarial/    # R-Gate + CLR 清单 v1.1（82 条）
-  ├── resbench/       # 资源基线（采样/启动计时/休眠保真/报告）
-  └── api/            # 本地 API 桥（FastAPI 11 端点）
-image/                # 容器镜像：Dockerfile + persona_bake + hook 层 + MV3 扩展
-tools/adversarial/    # CreepJS 自托管 + 探针采集 harness
-pipeline/ shell/      # 构建与运维脚本
+core/tishen/          # Python core
+  ├── cli.py          # orchestration CLI (create/start/stop/lint/doctor/...)
+  ├── persona.py      # persona.yaml spec & validation
+  ├── linter.py       # factory gate V1–V10
+  ├── observ/         # observation pipeline (keylog/decrypt/event store/daemon/hook_bus)
+  ├── engine/         # detection engine (entity/rules/behavior/scorer/daemon/payload/datasets)
+  ├── adversarial/    # R-Gate + CLR checklist v1.1 (82 items)
+  ├── resbench/       # resource baseline (sampling/boot timing/sleep fidelity/report)
+  └── api/            # local API bridge (FastAPI, 11 endpoints)
+image/                # container image: Dockerfile + persona_bake + hook layer + MV3 extension
+tools/adversarial/    # CreepJS self-hosting + probe harness
+pipeline/ shell/      # build & ops scripts
 ```
 
-## ✦ 快速开始
+## ✦ Quick Start
 
 ```bash
-# 开发态验证（无需 Docker）
-python -m pytest core/tests -q          # 479 全绿
-cd image/hook && node --test test/      # 25 全绿
+# Dev-mode verification (no Docker required)
+python -m pytest core/tests -q          # 479 passed
+cd image/hook && node --test test/      # 25 passed
 
-# 真机运行（需要 Linux 或 Windows WSL2 + Docker）
-python core/tishen/cli.py create        # 创建替身
-python core/tishen/cli.py start <id>    # 启动（neko WebRTC 回显）
-python core/tishen/cli.py events <id>   # 查看行为事件流
+# Real-machine run (Linux, or Windows WSL2 + Docker)
+python core/tishen/cli.py create        # create a persona
+python core/tishen/cli.py start <id>    # start it (neko WebRTC display)
+python core/tishen/cli.py events <id>   # watch the behavior event stream
 ```
 
-真机核验流程见《真实环境验收手册》与《真机核验 Handoff》文档（handoff 文档包）。
+Real-machine acceptance runs follow the *Real-Environment Acceptance Manual* and the *Field-Verification Handoff* documents (handoff doc pack).
 
-## ✦ 质量基线
+## ✦ Quality Baseline
 
-- **pytest 479/479**：编排/persona/门禁/观测/API 桥/M4/M5/判别引擎/hook 全模块（`env -i` 干净环境可复现）
-- **node --test 25/25**：hook 拦截面、观测不干预、采样自适应、事件协议
-- 契约测试贯穿：API 桥 19 用例、前后端类型同源、跨语言协议串通冒烟
+- **pytest 479/479**: orchestration / persona / gate / observation / API bridge / M4 / M5 / detection engine / hook — reproducible in a clean `env -i` shell
+- **node --test 25/25**: hook interception surface, non-interference guarantees, adaptive sampling, event protocol
+- Contract testing throughout: 19 API-bridge cases, frontend/backend types kept in sync, cross-language protocol smoke tests
 
-## ✦ 路线图
+## ✦ Roadmap
 
-- [x] M1–M3：容器编排 / neko 回显骨架 / 观测链路（沙盒验证完成）
-- [x] M4/M5 工具链：对抗测试 / 资源基线（真机采集待执行）
-- [x] 判别引擎 + hook 层：无所遁形数据通路全链闭合
-- [ ] **真机窗口期**：四格矩阵验收（A1–A8）+ M4/M5 实测（约 9 人日）
-- [ ] 产品化 P1：多替身调度（半自动）、一体化安装包、证据导出（决策已定，受真机门禁）
+- [x] M1–M3: container orchestration / neko display skeleton / observation pipeline (sandbox-verified)
+- [x] M4/M5 toolchains: adversarial testing / resource baseline (real-machine runs pending)
+- [x] Detection engine + hook layer: full Panopticon data path closed
+- [ ] **Field verification window**: compatibility-matrix acceptance (A1–A8) + M4/M5 measurements (~9 person-days)
+- [ ] Productization P1: multi-persona scheduling (semi-auto), one-shot installer, evidence export (decisions locked, gated on field verification)
 
-## ✦ 开源与合规
+## ✦ Open Source & Compliance
 
-- **防御性隐私定位**：不生成身份资料；**不内置任何绕过验证码/风控的能力**（对抗测试只测量不绕过）
-- **本地优先**：全部计算与数据留在本机，零遥测；监测数据本地加密、可一键清除、随容器销毁
-- **License 待定**：数据资产分两级——核心路径仅依赖非 NC 源（EasyPrivacy / whoTracks.me，CC BY 4.0），Tracker Radar / TrackerDB（CC BY-NC-SA）为可选非商业数据包、独立开关。正式 License 与 NOTICE 将于开源策略裁定时落定
+- **Defensive-privacy positioning**: no identity-document generation; **no CAPTCHA/risk-control bypass capabilities** (adversarial tests measure, never evade)
+- **Local-first**: all computation and data stay on your machine, zero telemetry; monitoring data is encrypted locally, one-click erasable, and destroyed with the container
+- **License TBD**: data assets are tiered — the core path depends only on non-NC sources (EasyPrivacy / whoTracks.me, CC BY 4.0); Tracker Radar / TrackerDB (CC BY-NC-SA) ship as optional non-commercial data packs with independent toggles. Formal license and NOTICE will land with the open-source-strategy decision
 
 ---
 
-*Doppel（替身）——隔离出一个干净的自己，让追踪者无所遁形。*
+*Doppel (替身) — a clean double of yourself, and nowhere for trackers to hide.*
