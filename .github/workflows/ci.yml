@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test deps
+        run: pip install pytest fastapi uvicorn pyyaml httpx
+      - name: pytest（479 基线，契约含 env -i 干净环境可复现纪律）
+        run: python -m pytest core/tests -q
+
+  node-hook:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: node --test（25 基线，hook 拦截面与事件协议）
+        run: cd image/hook && node --test test/
