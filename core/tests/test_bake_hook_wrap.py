@@ -137,6 +137,28 @@ def test_stream_image_still_requires_neko_password(bake, monkeypatch, tmp_path):
     assert exc.value.code == 2
 
 
+def test_display_sets_output_mode_before_shrinking_framebuffer(bake, monkeypatch):
+    persona = types.SimpleNamespace(
+        display=types.SimpleNamespace(width=1366, height=768, dpr=1.0))
+    calls = []
+    monkeypatch.setattr(bake, "_DRY_RUN", False)
+    monkeypatch.setattr(bake, "_ensure_x_server", lambda: None)
+    monkeypatch.setattr(bake, "_first_output", lambda: "DUMMY0")
+    monkeypatch.setattr(
+        bake, "_set_output_mode",
+        lambda output, width, height: calls.append(("mode", output, width, height)),
+    )
+    monkeypatch.setattr(
+        bake, "run_cmd",
+        lambda argv, desc, check=True: calls.append(("cmd", argv, desc)),
+    )
+
+    bake.step5_display(persona)
+
+    assert calls[0] == ("mode", "DUMMY0", 1366, 768)
+    assert calls[1][0:2] == ("cmd", ["xrandr", "--fb", "1366x768"])
+
+
 # ── _extension_id 金标准对拍 ────────────────────────────────────────────────
 @openssl_required
 def test_extension_id_golden(bake, key_file):
