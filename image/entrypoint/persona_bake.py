@@ -16,9 +16,11 @@ neko 只负责抓屏推流与输入回注，不接管 Chrome 生命周期（避�
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -509,6 +511,11 @@ HOOK_NATIVE_MANIFEST_DIR = "/etc/opt/chrome/native-messaging-hosts"
 # persona_id/session_id 固化进脚本体）；扩展 key 入镜像（I2），扩展 id 由 key 派生即恒定
 HOOK_WRAPPER = "/run/tishen/native-host-wrapper.sh"
 HOOK_EXT_KEY = "/opt/tishen/hook/ext-key.pem"
+HOOK_PACK_DIR = "/run/tishen/hook-pack"
+HOOK_PACK_SOURCE = f"{HOOK_PACK_DIR}/tishen-hook"
+HOOK_PACK_KEY = f"{HOOK_PACK_DIR}/ext-key.pem"
+HOOK_CRX = f"{HOOK_PACK_DIR}/tishen-hook.crx"
+HOOK_EXTERNAL_DIR = "/opt/google/chrome/extensions"
 
 
 def _hook_bus_available() -> bool:
@@ -600,12 +607,79 @@ def _extension_id(key_path: str) -> str:
     return "".join(chr(ord("a") + (b >> 4)) + chr(ord("a") + (b & 0xF)) for b in digest)
 
 
+def _install_external_hook_extension() -> str | None:
+    """按 Linux external-extension 契约打包并注册 CRX，返回扩展 id。
+
+    Chrome 137+ branded build 已忽略 --load-extension。Linux 仍支持 root 在
+    /opt/google/chrome/extensions 放置 external_crx 描述符；打包子进程以 ubuntu
+    用户运行并保留 Chrome setuid sandbox，不引入 --no-sandbox。
+    """
+    if _DRY_RUN:
+        log(f"[dry-run] 将打包 hook CRX → {HOOK_CRX} 并注册到 {HOOK_EXTERNAL_DIR}")
+        return None
+    pack_dir = Path(HOOK_PACK_DIR)
+    pack_source = Path(HOOK_PACK_SOURCE)
+    pack_key = Path(HOOK_PACK_KEY)
+    try:
+        if pack_dir.exists():
+            shutil.rmtree(pack_dir)
+        shutil.copytree(HOOK_EXT_DIR, pack_source)
+        shutil.copy2(HOOK_EXT_KEY, pack_key)
+        for root, dirs, files in os.walk(pack_dir):
+            root_path = Path(root)
+            os.chown(root_path, CHROME_UID, CHROME_GID)
+            for name in dirs:
+                os.chown(root_path / name, CHROME_UID, CHROME_GID)
+            for name in files:
+                os.chown(root_path / name, CHROME_UID, CHROME_GID)
+        pack_key.chmod(0o600)
+        proc = subprocess.run(
+            ["google-chrome",
+             f"--pack-extension={HOOK_PACK_SOURCE}",
+             f"--pack-extension-key={HOOK_PACK_KEY}"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "HOME": CHROME_HOME,
+                 "XDG_RUNTIME_DIR": CHROME_RUNTIME_DIR},
+            user=CHROME_UID,
+            group=CHROME_GID,
+            extra_groups=(),
+        )
+        if proc.returncode != 0 or not Path(HOOK_CRX).is_file():
+            detail = proc.stderr.strip() or proc.stdout.strip() or "未生成 CRX"
+            log(f"hook CRX 打包失败（rc={proc.returncode}）：{detail}；hook 降级，bake 继续")
+            return None
+        ext_id = _extension_id(HOOK_EXT_KEY)
+        manifest = json.loads((pack_source / "manifest.json").read_text(encoding="utf-8"))
+        external_dir = Path(HOOK_EXTERNAL_DIR)
+        external_dir.mkdir(parents=True, exist_ok=True)
+        descriptor = external_dir / f"{ext_id}.json"
+        descriptor.write_text(json.dumps({
+            "external_crx": HOOK_CRX,
+            "external_version": manifest["version"],
+        }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.chown(descriptor, 0, 0)
+        descriptor.chmod(0o644)
+        Path(HOOK_CRX).chmod(0o644)
+        log(f"hook CRX 已注册：id={ext_id}，descriptor={descriptor}")
+        return ext_id
+    except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
+        log(f"hook CRX 注册失败（{exc}），hook 降级，bake 继续")
+        return None
+    finally:
+        try:
+            pack_key.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def step7_7_hook(persona) -> None:
     """加挂 JS hook 事件总线 + Chrome 扩展/native manifest（SPEC-E3 §2.3，E-IV I1）。
 
     降级纪律同引擎守护：hook 层是观测增强，任何缺失/失败只记日志跳过，
     绝不阻塞 bake（观测与流链路不得被其缺失拖死）。
     """
+    _install_external_hook_extension()
     hook_argv = [sys.executable, "-m", "tishen.observ.hook_bus",
                  "--socket", HOOK_SOCKET, "--events-db", ENGINE_EVENTS_DB]
     hook_line = " ".join(shlex.quote(a) for a in hook_argv)
@@ -707,8 +781,6 @@ def build_chrome_argv(persona, gpu_vendor: str) -> list[str]:
         # V10 已限制为 http/socks5 端点；显式交给 Chrome，避免依赖容器外的
         # “全局代理/透明代理”假设（Docker bridge 通常不会继承宿主 TUN 路径）。
         argv.append(f"--proxy-server={persona.proxy}")
-    # SPEC-E3 §2.3：加载 MV3 hook 扩展（镜像内固化目录；缺失时 Chrome 仅告警不拒启）
-    argv.append(f"--load-extension={HOOK_EXT_DIR}")
     return argv
 
 

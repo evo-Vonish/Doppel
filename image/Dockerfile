@@ -121,6 +121,9 @@ COPY image/scripts/ /opt/tishen/scripts/
 # MV3 hook 扩展目录供 --load-extension 加载；纯增量，既有层零改动
 COPY image/hook/ /opt/tishen/hook/
 COPY image/hook/ext/ /opt/tishen/hook-ext/
+# content_scripts 的 MAIN world 入口与扩展壳同目录；原始脚本同时保留在 hook/
+# 供单元测试/资产审计，扩展目录这一份供 CRX 打包。
+COPY image/hook/tishen_hook.js /opt/tishen/hook-ext/tishen_hook.js
 
 # E-IV 件一（I2）：扩展 key 构建期一次性生成（独立缓存层，openssl 镜像已有不新装包）。
 # MV3 扩展 id 由 manifest key 派生——key 固定则 id 恒定，native manifest 的
