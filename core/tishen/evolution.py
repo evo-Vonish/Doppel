@@ -1,6 +1,7 @@
 """漂移包（drift pack）schema 与演化时机门禁（演化方案 §三 / §四步骤 0·2）。
 
-本模块只含**纯函数与数据件骨架**，不执行真实演化（门禁序列编排属 EVO-3）：
+本模块只含**纯函数与数据件骨架**，不执行真实演化（门禁序列编排属 EVO-3，
+见 evolve_seq.py）：
 
     DRIFT_PACK_SCHEMA                       —— drift pack JSON 结构约定（§三）
     validate_drift_pack(pack) -> list[str]  —— 结构校验（中文错误列表）
@@ -12,6 +13,15 @@
         G-API 真值来自 chromestatus/MDN BCD 机器 diff（联网件，本件不联网，
         留 TODO 由镜像流水线补全）；G-TLS/G-REND 真值来自真机抽测 harness
         对比（§三生成方式），骨架仅给占位结构，未签发前禁止演化。
+
+EVO-3 扩展（diff 审计器，§四步骤 5，纯函数）：
+
+    GROUP_FIELDS: dict[str, frozenset[str]] —— 七字段组 → FingerprintCapture 键映射表
+    diff_captures(old, new) -> dict[str, list[str]]
+        两份 capture 递归对比，按七组返回变化字段路径列表
+    audit_diff(old, new, pack) -> tuple[bool, list[str]]
+        diff 审计双断言（§四-5）：变化字段集 ⊆ drift pack 白名单
+        ∧ 变化字段集 ⊇ G-UA 必变集；违例返回中文错误列表
 
 架构红线（方案 §一）：演化 = 换真实 Chrome 镜像 + 重放冻结参数，本模块不产出
 任何字符串级指纹模拟数据（仅 G-UA 整组替换的备用路径在 §三被允许，亦不在骨架内编造）。
@@ -262,3 +272,175 @@ def build_drift_pack_skeleton(from_ver: str, to_ver: str, release_date: str) -> 
         },
         "invariants": list(DRIFT_PACK_INVARIANTS),
     }
+
+
+# ---------------------------------------------------------------------------
+# diff 审计器（EVO-3，§四步骤 5，纯函数）
+# ---------------------------------------------------------------------------
+
+# 七字段组 → FingerprintCapture（SPEC-M4 §2，18 顶层键）字段路径映射表。
+# 路径为点分前缀：变化路径 p 归属键 k 当且仅当 p == k 或 p 以 "k." 开头；
+# 以下划线结尾的键为**前缀标记**（"features.js_" 匹配 features.js_* 一族——
+# V8/JS 版本特征扩展键，SPEC-M4 §2 当前 capture 未含该族，为 G-JSVER 预留，
+# 与方案 §三 G-JSVER.v8_features_changed 对应）。
+# 归属仲裁取最长匹配键（如 tls_assert.h2 先于 tls_assert 命中 G-H2）。
+#
+# 与 SPEC-M4 §2 的 18 顶层键对齐情况：
+#   navigator.userAgent / sec_ch_ua      → G-UA（UA 族，版本升级必变）
+#   features.js_*（预留）                → G-JSVER
+#   features（其余 API 面）              → G-API
+#   tls_assert（ja3/ja4/source）         → G-TLS
+#   tls_assert.h2（SPEC-M4 未含，若有）  → G-H2
+#   canvas / audio / webgl / fonts       → G-REND（渲染面）
+#   screen / intl / webrtc / cross_reads / media / permissions / storage → G-ENV
+#   **未覆盖键一律兜底归入 G-ENV**：navigator 其余子键（platform/vendor/
+#   languages/hardwareConcurrency 等环境画像）、cdp_traces 及未来新增键。
+# capture_version / collected_at 为采集元数据（非指纹面），不参与 diff
+# （collected_at 每份采集必不同，纳入会把一切演化误判为 G-ENV 漂移）。
+GROUP_FIELDS: dict[str, frozenset[str]] = {
+    "G-UA": frozenset({"navigator.userAgent", "sec_ch_ua"}),
+    "G-JSVER": frozenset({"features.js_"}),
+    "G-API": frozenset({"features"}),
+    "G-TLS": frozenset({"tls_assert"}),
+    "G-H2": frozenset({"tls_assert.h2"}),
+    "G-REND": frozenset({"canvas", "audio", "webgl", "fonts"}),
+    "G-ENV": frozenset({
+        "screen", "intl", "webrtc", "cross_reads", "media", "permissions",
+        "storage",
+    }),
+}
+
+# 采集元数据键（SPEC-M4 §2 前两键）：非指纹面，diff 一律排除
+CAPTURE_METADATA_KEYS = frozenset({"capture_version", "collected_at"})
+
+# G-UA 必变集（§四-5「该变的必须变到位」）：Chrome 版本升级时 UA 字符串与
+# Sec-CH-UA 族（brands/fullVersionList/uaFullVersion 含版本号）必须同步变化，
+# 缺一即「演化没换到位」（只换镜像而 UA 面没跟上，或反之，都是跨层矛盾源，§一）。
+G_UA_MUST_CHANGE = frozenset({"navigator.userAgent", "sec_ch_ua"})
+
+_MISSING = object()  # 缺失键哨兵（缺失≠值为 None：缺失算变化，None 是合法值）
+
+
+def _match_key(path: str, key: str) -> bool:
+    """字段路径 path 是否归属映射键 k（精确 / "k." 前缀 / 下划线前缀标记）。"""
+    if key.endswith("_"):  # 前缀标记：features.js_ 匹配 features.js_* 一族
+        return path.startswith(key)
+    return path == key or path.startswith(key + ".")
+
+
+def group_of_path(path: str) -> str:
+    """字段路径 → 七字段组名。最长匹配键优先；未覆盖键兜底 G-ENV（见上表注释）。"""
+    best_group, best_len = "G-ENV", -1
+    for group, keys in GROUP_FIELDS.items():
+        for key in keys:
+            if _match_key(path, key) and len(key) > best_len:
+                best_group, best_len = group, len(key)
+    return best_group
+
+
+def _diff_value(old, new, path: str, out: list[str]) -> None:
+    """递归值对比：dict 逐键下钻；其余（含 list、标量、缺失）整体比较。
+
+    变化路径记在当前层级——list 不逐元素下钻（list 是有序整体值，
+    如 fonts/sec_ch_ua.brands，任一元素不同即记该 list 路径）。
+    """
+    if isinstance(old, dict) and isinstance(new, dict):
+        for k in sorted(old.keys() | new.keys()):
+            _diff_value(old.get(k, _MISSING), new.get(k, _MISSING),
+                        f"{path}.{k}" if path else k, out)
+    elif old is _MISSING or new is _MISSING or old != new:
+        out.append(path)
+
+
+def diff_captures(old: dict, new: dict) -> dict[str, list[str]]:
+    """两份 FingerprintCapture 递归对比，按七字段组返回变化字段路径列表。
+
+    值递归对比（dict 下钻、list/标量整体比较），**缺失键算变化**（§四-5
+    「不许白名单外任何变化」含结构增减）；capture_version/collected_at
+    采集元数据不参与。返回 dict 恒含七组键（无变化的组为空列表），
+    各组路径按字典序排序（确定性输出，供审计留痕）。
+    """
+    if not isinstance(old, dict):
+        old = {}
+    if not isinstance(new, dict):
+        new = {}
+    paths: list[str] = []
+    for key in sorted(old.keys() | new.keys()):
+        if key in CAPTURE_METADATA_KEYS:
+            continue
+        _diff_value(old.get(key, _MISSING), new.get(key, _MISSING), key, paths)
+    result: dict[str, list[str]] = {g: [] for g in GROUP_FIELDS}
+    for p in paths:
+        result[group_of_path(p)].append(p)
+    return result
+
+
+def _group_decl_active(decl) -> bool:
+    """drift pack 单组声明是否「声明了漂移」（§三各组值语义）。
+
+    判定：组映射内存在至少一个**活跃值**（非 None/False/空 list/空 dict/空串）。
+    "source" 键为出处元数据（chromestatus diff 等），非漂移声明，不参与判定。
+    例：{"h2_fingerprint_changed": false} → 未声明；{"ja4_expected": "t13d…"}
+    → 声明 TLS 面允许漂移；{} → 未声明（G-ENV 常态）。
+    """
+    if not isinstance(decl, dict):
+        return False
+    for k, v in decl.items():
+        if k == "source":
+            continue
+        if v is None or v is False or v == [] or v == {} or v == "":
+            continue
+        return True
+    return False
+
+
+def pack_allowed_groups(pack: dict) -> frozenset[str]:
+    """drift pack 白名单（组级）：本 pack 允许发生漂移的字段组集合。
+
+    G-UA 恒在白名单内——版本升级的唯一合法演化事件就是 UA 族漂移（§一），
+    且 G-UA 漂移同时是必变义务（G_UA_MUST_CHANGE）；其余各组按
+    _group_decl_active 判定（组级粒度，与 CLR 清单分组词汇表对齐，§三）。
+    pack 缺 groups 或结构残缺时保守处理：仅 G-UA 允许。
+    """
+    groups = pack.get("groups") if isinstance(pack, dict) else None
+    if not isinstance(groups, dict):
+        groups = {}
+    allowed = {"G-UA"}
+    for g in GROUP_FIELDS:
+        if g != "G-UA" and _group_decl_active(groups.get(g)):
+            allowed.add(g)
+    return frozenset(allowed)
+
+
+def audit_diff(old: dict, new: dict, pack: dict) -> tuple[bool, list[str]]:
+    """diff 审计双断言（§四步骤 5，本案核心创新）：返回 (是否通过, 中文错误列表)。
+
+      断言一（⊆）：F_old→F_new 变化字段集 ⊆ drift pack 白名单
+          （pack_allowed_groups 声明漂移的组所映射的 capture 键，
+          不许白名单外任何变化——冻结面动了即露馅）；
+      断言二（⊇）：变化字段集 ⊇ G-UA 必变集 G_UA_MUST_CHANGE
+          （UA/Sec-CH-UA 该变的必须变到位，没变=演化未兑现）。
+
+    纯函数；pack 结构合法性由 validate_drift_pack 前置把关，本函数对
+    残缺 pack 保守处理（仅 G-UA 白名单）。
+    """
+    diff = diff_captures(old, new)
+    changed = [p for paths in diff.values() for p in paths]
+    allowed_keys = [k for g in pack_allowed_groups(pack) for k in GROUP_FIELDS[g]]
+    errors: list[str] = []
+
+    # 断言一：白名单外变化即违例
+    for p in sorted(changed):
+        if not any(_match_key(p, k) for k in allowed_keys):
+            errors.append(
+                f"白名单外变化：{p}（属 {group_of_path(p)}，drift pack "
+                f"未声明该组漂移——不许白名单外任何变化，§四-5）")
+
+    # 断言二：G-UA 必变集逐项核对（该变的必须变到位）
+    for k in sorted(G_UA_MUST_CHANGE):
+        if not any(_match_key(p, k) for p in changed):
+            errors.append(
+                f"G-UA 必变集未变到位：{k}（版本升级 UA 族必变，"
+                f"该变的必须变到位，§四-5）")
+
+    return (not errors), errors

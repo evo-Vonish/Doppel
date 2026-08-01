@@ -9,6 +9,8 @@
     tishen doctor [<id>] [--json]
     tishen pull [--json]                                 # M2 新增：拉取平台镜像（幂等）
     tishen evolve <id> --pack <drift_pack.json>          # EVO-2：演化门禁检查（预览，不执行演化）
+    tishen evolve <id> --pack <drift_pack.json> --execute
+        # EVO-3：执行演化门禁序列（§四 0–8 骨架；真机步骤 stub 未接入则记 skipped）
 
 M2 全局 --json（可放子命令前或后）：list --json 输出替身数组；
 start <id> --json 输出 {"id","state","host_port","embed_url","password"} 供外壳消费；
@@ -620,11 +622,14 @@ def cmd_pull(args) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_evolve(args) -> int:
-    """tishen evolve <id> --pack <drift_pack.json>。
+    """tishen evolve <id> --pack <drift_pack.json> [--execute]。
 
-    只打印该 persona 当前演化状态（current/schedule/history 计数）并对指定
-    drift pack 跑时机门禁纯函数 check_evolve_gate（§四步骤 0/2）——
-    **不执行真实演化**（门禁序列步骤 1–8 编排属 EVO-3），不写任何状态。
+    默认（预览）：只打印该 persona 当前演化状态（current/schedule/history 计数）
+    并对指定 drift pack 跑时机门禁纯函数 check_evolve_gate（§四步骤 0/2）——
+    不执行真实演化，不写任何状态。
+    --execute（EVO-3）：调 run_evolve_sequence 执行门禁序列骨架（§四 0–8），
+    打印逐步结果；真机步骤 stub 未接入时记「skipped（真机接入后激活）」并
+    合法滞留；仅 outcome=evolved 时把 current_chrome/history 写回 persona.yaml。
     """
     from .evolution import check_evolve_gate, validate_drift_pack
     from .persona import count_rollbacks
@@ -662,6 +667,10 @@ def cmd_evolve(args) -> int:
             print(f"  [PACK] {msg}")
         return 1
 
+    # --execute（EVO-3）：执行演化门禁序列（§四 0–8 骨架）；预览为默认路径（不变）
+    if getattr(args, "execute", False):
+        return _evolve_execute(persona, pack)
+
     # 时机门禁（预览）：纯函数，今日日期取自本机时钟
     print(f"演化门禁检查（预览）——drift pack {pack['from']} → {pack['to']}：")
     ok, reasons = check_evolve_gate(persona, pack, today=date.today())
@@ -673,6 +682,42 @@ def cmd_evolve(args) -> int:
     for r in reasons:
         print(f"    - {r}")
     print("  说明：门禁拒绝=合法滞留当前版本（§四步骤 7），本命令不执行真实演化。")
+    return 1
+
+
+def _evolve_execute(persona, pack: dict) -> int:
+    """tishen evolve --execute：跑 EVO-3 门禁序列骨架并打印逐步结果。
+
+    真机步骤（R-Gate 实跑/镜像升级/外部抽样/采集）全部以 EvolveHooks 默认值
+    None 注入 → 首个真机依赖步骤记「skipped（真机接入后激活）」且序列合法
+    滞留（held，§四-7：绝不带病推进）。outcome=evolved 时把推进后的
+    current_chrome 与 history 落账条目 dump 回 persona.yaml（§四-8）。
+    """
+    from .evolve_seq import EvolveHooks, run_evolve_sequence
+
+    print(f"演化门禁序列执行（§四 0–8）——drift pack {pack['from']} → {pack['to']}：")
+    result = run_evolve_sequence(persona, pack, hooks=EvolveHooks(), today=date.today())
+    for s in result["steps"]:
+        if s["skipped"]:
+            mark = "skipped（真机接入后激活）"
+        elif s["ok"]:
+            mark = "OK"
+        else:
+            mark = "拒绝"
+        print(f"  [{mark}] {s['step']}：{s['detail']}")
+
+    outcome = result["outcome"]
+    if outcome == "evolved":
+        dump_persona(persona, _personas_dir() / f"{persona.meta.id}.yaml")
+        print(f"  [结果] evolved：演化完成，current_chrome 推进至 {pack['to']}，"
+              "履历已落 history（§四-8）。")
+        return 0
+    if outcome == "held":
+        print("  [结果] held：合法滞留当前版本（§四-7：任一门禁失败→合法滞留+告警，"
+              "不许带病演化）。")
+    else:
+        print("  [结果] rejected：演化结果未过硬断言（§四-4/5），拒绝落账，"
+              "履历不写 history。")
     return 1
 
 
@@ -746,6 +791,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id", help="替身 ID（p_ 开头）")
     p.add_argument("--pack", required=True,
                    help="drift pack JSON 路径（演化方案 §三数据件）")
+    p.add_argument("--execute", action="store_true",
+                   help="执行演化门禁序列（EVO-3 §四 0–8 骨架；真机步骤 stub 未接入则记 skipped 并合法滞留）")
     p.set_defaults(func=cmd_evolve)
 
     return parser
