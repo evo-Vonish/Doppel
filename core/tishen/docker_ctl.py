@@ -92,6 +92,9 @@ def build_run_command(persona: Persona, image_tag: str,
     args = [
         "docker", "run", "-d",
         "--name", container_name(pid),
+        # Chrome profile 的 SingletonLock 编码 hostname；按 persona 固定，避免容器重建
+        # 时随机容器 ID 被误判成“另一台机器正在使用 profile”。
+        "--hostname", container_name(pid),
         f"--shm-size={SHM_SIZE}",
         *gpu_passthrough_args(),                        # GPU 透传（R2；Linux/WSL2）
         "--cap-add", "NET_RAW", "--cap-add", "NET_ADMIN",  # 观测抓包所需

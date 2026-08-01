@@ -48,6 +48,8 @@ CHROME_UID = 1000                               # ubuntu:noble 镜像内固定�
 CHROME_GID = 1000
 CHROME_HOME = "/home/ubuntu"
 CHROME_RUNTIME_DIR = f"/run/user/{CHROME_UID}"
+CHROME_PROFILE = Path("/persona/profile")
+CHROME_SINGLETON_FILES = ("SingletonCookie", "SingletonLock", "SingletonSocket")
 
 # 后台子进程登记表：名称 → Popen，供第 10 步 SIGTERM 收尾按序终止
 _CHILDREN: dict[str, subprocess.Popen] = {}
@@ -135,10 +137,17 @@ def prepare_chrome_user() -> dict[str, str]:
     if _DRY_RUN:
         log(f"[dry-run] 将准备 Chrome 非 root 运行用户：uid={CHROME_UID}, gid={CHROME_GID}, HOME={CHROME_HOME}")
         return env
-    for path in (Path("/persona/profile"),
+    for path in (CHROME_PROFILE,
                  Path("/persona/logs/sslkeys"),
                  Path("/persona/logs/hook")):
         _chown_tree_once(path)
+    # CLI 以唯一容器名保证同一 persona 不会并行启动；此处只清理由上一容器异常退出
+    # 遗留的 Chrome 进程互斥 symlink，不触碰 Cookies/History 等任何浏览数据。
+    try:
+        for name in CHROME_SINGLETON_FILES:
+            (CHROME_PROFILE / name).unlink(missing_ok=True)
+    except OSError as exc:
+        fail(f"清理 Chrome profile 单例锁失败：{exc}")
     runtime_dir = Path(CHROME_RUNTIME_DIR)
     _chown_tree_once(runtime_dir)
     runtime_dir.chmod(0o700)
