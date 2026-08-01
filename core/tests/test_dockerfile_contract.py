@@ -28,3 +28,11 @@ def test_all_apt_transactions_retry_without_http_pipelining():
     assert all("apt-get ${APT_NETWORK_OPTS}" in line for line in apt_commands)
     assert "Acquire::Retries=5" in dockerfile
     assert "Acquire::http::Pipeline-Depth=0" in dockerfile
+
+
+def test_hook_main_world_script_is_present_in_extension_pack_directory():
+    dockerfile = (REPO_ROOT / "image" / "Dockerfile").read_text(encoding="utf-8")
+    assert (
+        "COPY image/hook/tishen_hook.js "
+        "/opt/tishen/hook-ext/tishen_hook.js"
+    ) in dockerfile

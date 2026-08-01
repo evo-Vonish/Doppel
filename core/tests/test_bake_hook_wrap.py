@@ -3,6 +3,7 @@
 # fixture → 已知 id）、manifest 渲染替换、既有 bake dry-run 契约零回归。
 import hashlib
 import importlib.util
+import json
 import os
 import shutil
 import stat
@@ -322,9 +323,57 @@ def test_dry_run_contract_no_writes(bake, persona, monkeypatch, tmp_path, capsys
     assert not (tmp_path / "NativeMessagingHosts").exists()
 
 
-def test_build_chrome_argv_load_extension_unchanged(bake, persona):
+def test_build_chrome_argv_uses_external_extension_not_removed_flag(bake, persona):
     argv = bake.build_chrome_argv(persona_display := types.SimpleNamespace(
         meta=types.SimpleNamespace(id="p"), region=types.SimpleNamespace(locale="zh-CN"),
         webrtc=types.SimpleNamespace(ip_handling_policy="default"), proxy=None), "mesa")
-    assert f"--load-extension={bake.HOOK_EXT_DIR}" in argv
+    assert not any(arg.startswith("--load-extension=") for arg in argv)
     assert "--no-sandbox" not in argv and "--remote-debugging-port" not in " ".join(argv)
+
+
+def test_external_hook_crx_pack_and_descriptor_contract(bake, monkeypatch, tmp_path):
+    source = tmp_path / "hook-ext"
+    source.mkdir()
+    (source / "manifest.json").write_text(
+        '{"manifest_version":3,"name":"Tishen Hook","version":"0.1.0"}',
+        encoding="utf-8",
+    )
+    (source / "tishen_hook.js").write_text("// fixture", encoding="utf-8")
+    key = tmp_path / "ext-key.pem"
+    key.write_text(FIXTURE_KEY_PEM, encoding="utf-8")
+    pack_dir = tmp_path / "run" / "hook-pack"
+    external_dir = tmp_path / "opt" / "google" / "chrome" / "extensions"
+    monkeypatch.setattr(bake, "HOOK_EXT_DIR", str(source))
+    monkeypatch.setattr(bake, "HOOK_EXT_KEY", str(key))
+    monkeypatch.setattr(bake, "HOOK_PACK_DIR", str(pack_dir))
+    monkeypatch.setattr(bake, "HOOK_PACK_SOURCE", str(pack_dir / "tishen-hook"))
+    monkeypatch.setattr(bake, "HOOK_PACK_KEY", str(pack_dir / "ext-key.pem"))
+    monkeypatch.setattr(bake, "HOOK_CRX", str(pack_dir / "tishen-hook.crx"))
+    monkeypatch.setattr(bake, "HOOK_EXTERNAL_DIR", str(external_dir))
+    monkeypatch.setattr(bake, "_extension_id", lambda path: GOLDEN_EXT_ID)
+    monkeypatch.setattr(bake.os, "chown", lambda *args, **kwargs: None, raising=False)
+
+    def fake_pack(argv, **kwargs):
+        assert argv == [
+            "google-chrome",
+            f"--pack-extension={pack_dir / 'tishen-hook'}",
+            f"--pack-extension-key={pack_dir / 'ext-key.pem'}",
+        ]
+        assert kwargs["user"] == bake.CHROME_UID
+        assert kwargs["group"] == bake.CHROME_GID
+        assert kwargs["extra_groups"] == ()
+        assert "--no-sandbox" not in argv
+        (pack_dir / "tishen-hook.crx").write_bytes(b"Cr24fixture")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(bake.subprocess, "run", fake_pack)
+
+    assert bake._install_external_hook_extension() == GOLDEN_EXT_ID
+    descriptor = json.loads(
+        (external_dir / f"{GOLDEN_EXT_ID}.json").read_text(encoding="utf-8")
+    )
+    assert descriptor == {
+        "external_crx": str(pack_dir / "tishen-hook.crx"),
+        "external_version": "0.1.0",
+    }
+    assert not (pack_dir / "ext-key.pem").exists()

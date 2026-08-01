@@ -266,9 +266,9 @@ def test_bake_dry_run_contains_hook_section(capsys):
     assert "native-messaging-hosts" in out
 
 
-def test_bake_chrome_argv_loads_hook_extension(capsys):
+def test_bake_chrome_argv_uses_registered_hook_extension(capsys):
     _, argv = _run_bake_dry_run(capsys)
-    assert "--load-extension=/opt/tishen/hook-ext" in argv
+    assert not any(arg.startswith("--load-extension=") for arg in argv)
     # 禁项未引入
     assert "--no-sandbox" not in argv and "--remote-debugging-port" not in argv
 
