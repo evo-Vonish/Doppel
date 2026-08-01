@@ -21,8 +21,7 @@ KEEP_DATA=0
 FORCE=0
 DRY_RUN=0
 UNATTENDED=0
-for arg in "$@"; do
-  case "$arg" in
+for arg in "$@"; do  case "$arg" in
     --keep-data) KEEP_DATA=1 ;;
     --force) FORCE=1 ;;
     --dry-run) DRY_RUN=1 ;;
@@ -38,6 +37,11 @@ ok()   { echo "  [成功] $*"; }
 warn() { echo "  [警告] $*" >&2; }
 die()  { echo "  [失败] $1" >&2; exit "${2:-1}"; }
 step() { echo ""; echo "[$1/5] $2"; }
+
+# docker 可用性统一判定点（同 install.sh 注入点，测试专用）。
+docker_available() {
+  [ -z "${DOPPEL_FORCE_NO_DOCKER:-}" ] && command -v docker >/dev/null 2>&1
+}
 
 # ---------- 权限判定与路径解析（同 install.sh） ----------
 SUDO=""
@@ -98,7 +102,7 @@ remove_assets() {
 # ---------- [2/5] 删除替身镜像（doppel-image*） ----------
 remove_images() {
   step 2 "删除替身镜像（doppel-image*）"
-  if ! command -v docker >/dev/null 2>&1; then
+  if ! docker_available; then
     say "  Docker 不在 PATH，跳过镜像清理"
     return 0
   fi
@@ -121,7 +125,7 @@ remove_volumes() {
     say "  --keep-data：保留全部数据卷 ts_*，跳过本步"
     return 0
   fi
-  if ! command -v docker >/dev/null 2>&1; then
+  if ! docker_available; then
     say "  Docker 不在 PATH，跳过数据卷清理"
     return 0
   fi
@@ -198,8 +202,12 @@ remove_group_and_summary() {
   step 5 "移出 docker 用户组并输出摘要"
   if [ "$ROOT_OK" -eq 1 ] && command -v gpasswd >/dev/null 2>&1 \
      && id -nG "$TARGET_USER" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
-    run_root gpasswd -d "$TARGET_USER" docker
-    say "  docker 组变更需注销重登后生效"
+    # 组移出是清理尾项，失败（权限/组策略）不应致命——CI/受限环境实证。
+    if ! run_root gpasswd -d "$TARGET_USER" docker; then
+      warn "gpasswd 移出 docker 组失败（可手动执行：sudo gpasswd -d $TARGET_USER docker），继续收尾"
+    else
+      say "  docker 组变更需注销重登后生效"
+    fi
   else
     say "  用户 $TARGET_USER 不在 docker 组或无权限，跳过"
   fi

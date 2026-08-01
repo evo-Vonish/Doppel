@@ -28,6 +28,12 @@ for arg in "$@"; do
   esac
 done
 
+# docker 可用性统一判定点（DOPPEL_FORCE_NO_DOCKER=1 强制视为未安装——
+# 测试注入点：CI runner 预装 docker 会掩盖"代装"分支，断言须显式环境）。
+docker_available() {
+  [ -z "${DOPPEL_FORCE_NO_DOCKER:-}" ] && command -v docker >/dev/null 2>&1
+}
+
 # 日志（要素 6）：正式安装全程 tee；dry-run 零落盘故不写日志文件
 LOG_FILE=""
 if [ "$DRY_RUN" -eq 0 ]; then
@@ -128,7 +134,7 @@ install_docker() {
     say "  卸载后重跑本脚本，将由发行版官方源代装 Docker。"
     exit 3
   fi
-  if command -v docker >/dev/null 2>&1; then
+  if docker_available; then
     ok "已安装 Docker（$(docker --version 2>/dev/null | head -n1)），跳过代装（幂等可重跑）"
     return 0
   fi
@@ -216,7 +222,7 @@ download_shell() {
 setup_docker_group() {
   step 5 "配置 docker 用户组（免 sudo 使用 Docker）"
   if [ "$ROOT_OK" -eq 0 ]; then warn "无 root/sudo 权限，跳过用户组配置"; return 0; fi
-  if [ "$DRY_RUN" -eq 0 ] && ! command -v docker >/dev/null 2>&1; then warn "Docker 不在 PATH，跳过用户组配置"; return 0; fi
+  if [ "$DRY_RUN" -eq 0 ] && ! docker_available; then warn "Docker 不在 PATH，跳过用户组配置"; return 0; fi
   if id -nG "$TARGET_USER" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then ok "用户 $TARGET_USER 已在 docker 组，无需调整"; return 0; fi
   run_root usermod -aG docker "$TARGET_USER"
   say "  重要提示：docker 组需【注销重登】或执行【newgrp docker】后方生效！"

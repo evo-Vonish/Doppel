@@ -133,7 +133,10 @@ def injected(tmp_path: Path) -> dict:
 )
 def test_dry_run_supported_distros(distro: str, pkg_cmd: str, injected: dict) -> None:
     Path(injected["DOPPEL_OS_RELEASE"]).write_text(OS_RELEASE_FIXTURES[distro])
-    result = run_sh(INSTALL_SH, ["--dry-run"], injected)
+    # 显式构造"未装 Docker"（CI runner 预装 docker 会走"已装跳过"分支
+    # 而断言期待代装命令——环境显式化，同 test_api 修复纪律）。
+    env = {**injected, "DOPPEL_FORCE_NO_DOCKER": "1"}
+    result = run_sh(INSTALL_SH, ["--dry-run"], env)
     assert result.returncode == 0, result.stderr
     out = result.stdout
     for i in range(1, 7):
