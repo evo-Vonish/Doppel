@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-plugins-ugly \
     gstreamer1.0-libav \
     libx264-164 \
-    libvpx7 \
+    libvpx9 \
     && rm -rf /var/lib/apt/lists/*
 
 # GPU 透传准备（借鉴 kasm）：
@@ -89,11 +89,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ── L4 替身层：烘焙入口 + 观测脚手架 ──────────────────────────────────────
 FROM chrome AS tishen
 
+# Build arguments are stage-scoped.  Redeclare the version here so the final
+# image label below records the version injected by the release pipeline.
+ARG CHROME_VERSION=stable
+
 # 烘焙器运行时依赖：python3 + PyYAML（契约白名单）；
 # 观测脚手架：tcpdump（环形抓包）、age（日志/keylog 加密落盘工具链，R11）；
 # tshark：M3 观测链路（pcap → TLS 解密 → 事件流）需要，M2 由 Coder C 代装（SPEC-M2M3 §1.1）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
+    python3-pip \
     python3-yaml \
     tcpdump \
     age \
@@ -117,19 +122,8 @@ RUN chmod 755 /opt/tishen/hook/tishen_native_host.py \
     && openssl genrsa -out /opt/tishen/hook/ext-key.pem 2048 \
     && chmod 600 /opt/tishen/hook/ext-key.pem \
     && PUBKEY="$(openssl rsa -in /opt/tishen/hook/ext-key.pem -pubout -outform DER 2>/dev/null | base64 -w0)" \
-    && python3 - "$PUBKEY" <<'PYEOF'
-import json
-import sys
-
-path = "/opt/tishen/hook-ext/manifest.json"
-with open(path, encoding="utf-8") as fh:
-    manifest = json.load(fh)
-# MV3 key 字段 = public key DER 的 base64（chrome 据此派生恒定扩展 id）
-manifest["key"] = sys.argv[1]
-with open(path, "w", encoding="utf-8") as fh:
-    json.dump(manifest, fh, ensure_ascii=False, indent=2)
-    fh.write("\n")
-PYEOF
+    && python3 /opt/tishen/hook/inject_manifest_key.py \
+        /opt/tishen/hook-ext/manifest.json "$PUBKEY"
 
 # 拷贝并安装 tishen core 包（由 core 分支提供；--no-deps 遵守依赖白名单纪律）。
 # 烘焙器在容器内复用 tishen.persona / tishen.linter 做 schema 校验与 linter 门禁复验（SPEC §6 第 1 步）。

@@ -1,0 +1,4 @@
+# Shell entrypoints execute inside Linux containers and must not be checked out
+# with CRLF when the repository is cloned from Windows.
+*.sh text eol=lf
+image/entrypoint/persona-bake text eol=lf
