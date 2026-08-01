@@ -20,8 +20,13 @@ def bake():
     return module
 
 
-def test_prepare_chrome_user_dry_run_is_read_only(bake, monkeypatch):
+def test_prepare_chrome_user_dry_run_is_read_only(bake, monkeypatch, tmp_path):
     bake._DRY_RUN = True
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    lock = profile / "SingletonLock"
+    lock.write_text("must remain", encoding="utf-8")
+    monkeypatch.setattr(bake, "CHROME_PROFILE", profile)
     monkeypatch.setattr(
         bake,
         "_chown_tree_once",
@@ -33,6 +38,26 @@ def test_prepare_chrome_user_dry_run_is_read_only(bake, monkeypatch):
     assert env["HOME"] == "/home/ubuntu"
     assert env["USER"] == env["LOGNAME"] == "ubuntu"
     assert env["XDG_RUNTIME_DIR"] == "/run/user/1000"
+    assert lock.read_text(encoding="utf-8") == "must remain"
+
+
+def test_prepare_chrome_user_removes_only_stale_singleton_locks(bake, monkeypatch, tmp_path):
+    bake._DRY_RUN = False
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    history = profile / "History"
+    history.write_text("must survive", encoding="utf-8")
+    locks = [profile / name for name in bake.CHROME_SINGLETON_FILES]
+    for lock in locks:
+        lock.write_text("stale", encoding="utf-8")
+    monkeypatch.setattr(bake, "CHROME_PROFILE", profile)
+    monkeypatch.setattr(bake, "_chown_tree_once", lambda path: None)
+    monkeypatch.setattr(Path, "chmod", lambda path, mode: None)
+
+    bake.prepare_chrome_user()
+
+    assert all(not lock.exists() for lock in locks)
+    assert history.read_text(encoding="utf-8") == "must survive"
 
 
 def test_prepare_chrome_user_hands_off_only_chrome_write_paths(bake, monkeypatch):
