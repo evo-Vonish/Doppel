@@ -1,7 +1,7 @@
 """tishen 命令行（SPEC §7 + M2 JSON 输出与事件查询，SPEC-M2M3 §1.3，argparse）。
 
 子命令：
-    tishen create [--region auto|CN|HK|TW|JP|US|GB|DE] [--name 名] [--seed N]
+    tishen create [--region auto|CA|CN|HK|TW|JP|US|GB|DE] [--name 名] [--seed N]
     tishen start|stop|suspend|resume|reset|destroy <id>
     tishen list [--json]
     tishen events <id> [--type T] [--limit N] [--json]   # M2 新增；数据由 M3 观测模块提供

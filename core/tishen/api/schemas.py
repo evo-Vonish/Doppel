@@ -35,7 +35,7 @@ class PersonaSchema(BaseModel):
 class CreatePersonaRequest(BaseModel):
     """POST /api/personas 请求体（SPEC-API §2 表 #3）。"""
     name: str = Field(min_length=1, max_length=32)
-    region: str = "auto"                         # auto/CN/HK/TW/JP/US/GB/DE
+    region: str = "auto"                         # auto/CA/CN/HK/TW/JP/US/GB/DE
 
 
 # ---------------------------------------------------------------------------

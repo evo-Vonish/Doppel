@@ -8,6 +8,12 @@
 """
 
 REGION_PROFILES = {
+    "CA": {"timezones": {"America/St_Johns", "America/Halifax", "America/Toronto",
+                           "America/Winnipeg", "America/Regina", "America/Edmonton",
+                           "America/Vancouver", "America/Whitehorse", "America/Iqaluit"},
+           "locales": {"en-CA", "fr-CA"}, "lang_prefixes": ("en", "fr"),
+           "cjk": False, "default_timezone": "America/Vancouver",
+           "default_locale": "en-CA"},
     "CN": {"timezones": {"Asia/Shanghai", "Asia/Urumqi"}, "locales": {"zh-CN"},
            "lang_prefixes": ("zh",), "cjk": True},
     "HK": {"timezones": {"Asia/Hong_Kong"}, "locales": {"zh-HK", "zh-TW", "en-HK"},

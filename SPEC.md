@@ -188,7 +188,7 @@ def create_persona(name: str, region: str, stable_chrome: str,
 ## 7. CLI 契约（core/tishen/cli.py，argparse）
 
 ```
-tishen create [--region auto|CN|HK|TW|JP|US|GB|DE] [--name 名] [--seed N]   # §4 全流程
+tishen create [--region auto|CA|CN|HK|TW|JP|US|GB|DE] [--name 名] [--seed N]   # §4 全流程
 tishen start <id> | stop <id> | suspend <id> | resume <id> | reset <id> | destroy <id>
 tishen list
 tishen lint <persona.yaml>            # 对任意 yaml 跑 linter，打印错误表

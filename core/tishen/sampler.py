@@ -76,6 +76,8 @@ def generate_candidates(n: int, region: str, rng: random.Random) -> list[dict]:
     if profile is None:
         raise ValueError(f"未知属地 {region!r}，已知属地：{sorted(REGION_PROFILES)}")
 
+    default_locale = profile.get("default_locale", sorted(profile["locales"])[0])
+    default_timezone = profile.get("default_timezone", sorted(profile["timezones"])[0])
     candidates: list[dict] = []
     if _HAS_BROWSERFORGE:  # pragma: no cover - 依赖可选，默认环境走兜底
         # browserforge 提供真实指纹分布；此处取其屏幕/硬件维度，
@@ -90,8 +92,8 @@ def generate_candidates(n: int, region: str, rng: random.Random) -> list[dict]:
                 "hardwareConcurrency": fp.navigator.hardware_concurrency,
                 "deviceMemory": fp.navigator.device_memory,
                 "font_pack": "linux-noto-standard",
-                "locale": sorted(profile["locales"])[0],
-                "timezone": sorted(profile["timezones"])[0],
+                "locale": default_locale,
+                "timezone": default_timezone,
             })
     else:
         # 离线兜底：加权静态表（近似分布，后续以真实数据替换）
@@ -106,8 +108,8 @@ def generate_candidates(n: int, region: str, rng: random.Random) -> list[dict]:
                 "deviceMemory": _weighted_choice(
                     rng, BUNDLED_DISTRIBUTION["deviceMemory"]),
                 "font_pack": _weighted_choice(rng, BUNDLED_DISTRIBUTION["font_pack"]),
-                "locale": sorted(profile["locales"])[0],
-                "timezone": sorted(profile["timezones"])[0],
+                "locale": default_locale,
+                "timezone": default_timezone,
             })
     return candidates
 
