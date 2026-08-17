@@ -168,7 +168,7 @@ def test_neko_argv_matches_persona_and_disables_default_stun(bake, persona):
         bake.NEKO_BIN,
         "serve",
         "--static=/var/www",
-        "--screen=1366x768@30",
+        "--screen=1366x768@60",
         "--iceserver=",
     ]
     assert "stun.l.google.com" not in " ".join(argv)
