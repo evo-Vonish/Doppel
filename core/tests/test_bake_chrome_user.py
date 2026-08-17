@@ -157,6 +157,30 @@ def test_chrome_uses_explicit_persona_proxy_only_when_configured(bake):
     assert not any(arg.startswith("--proxy-bypass-list=") for arg in argv)
 
 
+@pytest.mark.parametrize(
+    ("bcp47", "posix"),
+    [("en-CA", "en_CA.UTF-8"), ("zh-HK", "zh_HK.UTF-8")],
+)
+def test_locale_uses_glibc_name_without_changing_browser_language(
+        bake, monkeypatch, bcp47, posix):
+    persona = types.SimpleNamespace(
+        region=types.SimpleNamespace(
+            locale=bcp47, languages=[bcp47, bcp47.split("-", 1)[0]]),
+        webrtc=types.SimpleNamespace(ip_handling_policy="disable_non_proxied_udp"),
+        proxy=None,
+    )
+    monkeypatch.delenv("LANG", raising=False)
+    monkeypatch.delenv("LC_ALL", raising=False)
+    monkeypatch.delenv("LANGUAGE", raising=False)
+
+    bake.step3_locale(persona)
+
+    assert bake.os.environ["LANG"] == posix
+    assert bake.os.environ["LC_ALL"] == posix
+    assert bake.os.environ["LANGUAGE"] == f"{bcp47}:{bcp47.split('-', 1)[0]}"
+    assert f"--lang={bcp47}" in bake.build_chrome_argv(persona, "mesa")
+
+
 def test_hook_bus_removes_stale_volume_socket_before_spawn_and_handoff():
     source = BAKE_PATH.read_text(encoding="utf-8")
     hook_section = source[source.index("def step7_7_hook") : source.index("# ── 第 7.5 步")]

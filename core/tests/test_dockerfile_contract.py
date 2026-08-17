@@ -20,7 +20,7 @@ def test_runtime_installs_xcvt_for_dynamic_modelines():
     assert "xcvt" in packages
 
 
-def test_tishen_stage_installs_glxinfo_in_isolated_probe_layer():
+def test_tishen_stage_installs_grid3_probe_and_supported_locales_in_isolated_layer():
     dockerfile = (REPO_ROOT / "image" / "Dockerfile").read_text(encoding="utf-8")
     runtime_stage = dockerfile.split("FROM ${UBUNTU} AS runtime", 1)[1].split(
         "FROM runtime AS i18n", 1
@@ -30,12 +30,19 @@ def test_tishen_stage_installs_glxinfo_in_isolated_probe_layer():
     tishen_stage = dockerfile.split("FROM chrome AS tishen", 1)[1].split(
         "FROM tishen AS stream", 1
     )[0]
-    probe_layer = tishen_stage.split("# 格 3 真机 GPU 门禁工具", 1)[1].split(
+    probe_layer = tishen_stage.split("# 格 3 真机门禁工具", 1)[1].split(
         "# 拷贝镜像层自带资产", 1
     )[0]
 
     assert "apt-get ${APT_NETWORK_OPTS} update" in probe_layer
     assert "mesa-utils" in probe_layer
+    assert "locales" in probe_layer
+    for locale in (
+        "de_DE.UTF-8", "en_CA.UTF-8", "en_GB.UTF-8", "en_HK.UTF-8",
+        "en_US.UTF-8", "fr_CA.UTF-8", "ja_JP.UTF-8", "zh_CN.UTF-8",
+        "zh_HK.UTF-8", "zh_TW.UTF-8",
+    ):
+        assert locale in probe_layer
     assert "rm -rf /var/lib/apt/lists/*" in probe_layer
 
 
