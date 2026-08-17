@@ -185,6 +185,29 @@ def test_no_key_handshake_marked_gap(sandbox):
     daemon.close()
 
 
+def test_tls13_only_keylog_counts_as_aligned(sandbox):
+    """现代 Chrome 无 CLIENT_RANDOM 时，traffic-secret random 仍用于覆盖率对齐。"""
+    make_shards, make_daemon, events_dir = sandbox
+    make_shards(2)
+    daemon = make_daemon()
+    daemon.config.keylog_path.write_text(
+        "CLIENT_HANDSHAKE_TRAFFIC_SECRET " + "1" * 64 + " " + "c" * 64 + "\n"
+        "SERVER_TRAFFIC_SECRET_0 " + "1" * 64 + " " + "d" * 64 + "\n",
+        encoding="utf-8",
+    )
+
+    stats = daemon.run_once()
+    rows = query_events(str(events_dir / "events.db"), limit=200)
+    conn = store.connect(events_dir / "events.db")
+    ledger = conn.execute("SELECT note FROM processed_shards").fetchone()[0]
+    conn.close()
+
+    assert stats["processed"] == 1
+    assert not any("缺密钥" in row["summary"] for row in rows)
+    assert "覆盖率 1/1" in ledger
+    daemon.close()
+
+
 def test_encrypt_failure_keeps_plaintext(sandbox):
     """加密失败：明文保留不删（不可销毁未加密证据），事件照常落库。"""
     make_shards, make_daemon, events_dir = sandbox
