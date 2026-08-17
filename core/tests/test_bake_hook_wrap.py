@@ -168,6 +168,7 @@ def test_neko_argv_matches_persona_and_disables_default_stun(bake, persona):
         bake.NEKO_BIN,
         "serve",
         "--static=/var/www",
+        "--display=:0",
         "--screen=1366x768@60",
         "--iceserver=",
     ]
@@ -179,10 +180,21 @@ def test_stream_neko_injects_random_admin_password_without_argv_leak(
     neko = tmp_path / "neko"
     neko.write_text("binary placeholder", encoding="utf-8")
     captured = {}
+    popen_calls = []
+    pulse_socket = tmp_path / "pulseaudio.socket"
+
+    def fake_popen(argv, **kwargs):
+        popen_calls.append((argv, kwargs))
+        pulse_socket.touch()
+        return types.SimpleNamespace(pid=4321, poll=lambda: None)
+
     monkeypatch.setattr(bake, "NEKO_BIN", str(neko))
+    monkeypatch.setattr(bake, "PULSEAUDIO_SOCKET", str(pulse_socket))
+    monkeypatch.setattr(bake, "PULSEAUDIO_SERVER", f"unix:{pulse_socket}")
     monkeypatch.setattr(bake, "_DRY_RUN", False)
     monkeypatch.setenv("NEKO_PASSWORD", "random-32-byte-secret")
     monkeypatch.delenv("NEKO_PASSWORD_ADMIN", raising=False)
+    monkeypatch.setattr(bake.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(
         bake,
         "spawn",
@@ -197,6 +209,15 @@ def test_stream_neko_injects_random_admin_password_without_argv_leak(
     assert captured["name"] == "neko"
     assert captured["admin_password"] == "random-32-byte-secret"
     assert "random-32-byte-secret" not in " ".join(captured["argv"])
+    assert len(popen_calls) == 1
+    pulse_argv, pulse_kwargs = popen_calls[0]
+    assert pulse_argv[0] == bake.PULSEAUDIO_BIN
+    assert "--disallow-module-loading" in pulse_argv
+    assert pulse_kwargs["user"] == bake.CHROME_UID
+    assert pulse_kwargs["group"] == bake.CHROME_GID
+    assert pulse_kwargs["env"]["HOME"] == bake.CHROME_HOME
+    assert pulse_kwargs["env"]["PULSE_SERVER"] == f"unix:{pulse_socket}"
+    assert os.environ["PULSE_SERVER"] == f"unix:{pulse_socket}"
 
 
 @pytest.mark.parametrize("default_password", ["neko", "admin", "ADMIN"])

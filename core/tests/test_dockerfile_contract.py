@@ -75,6 +75,11 @@ def test_stream_stage_uses_digest_pinned_official_neko_assets():
     ) in stream_section
     assert "COPY --from=neko_v2 /usr/bin/neko /opt/neko/neko" in stream_section
     assert "COPY --from=neko_v2 /var/www/ /var/www/" in stream_section
+    assert (
+        "COPY --from=neko_v2 /etc/pulse/default.pa /etc/pulse/default.pa"
+        in stream_section
+    )
+    assert 'grep -F "sink_name=audio_output" /etc/pulse/default.pa' in stream_section
     assert 'grep -F "Version ${NEKO_VERSION}"' in stream_section
     assert 'tishen.neko.version="${NEKO_VERSION}"' in stream_section
 
@@ -91,4 +96,6 @@ def test_stream_stage_uses_single_local_webrtc_udp_mux():
     assert "NEKO_ICELITE=1" in stream_section
     assert "NEKO_NAT1TO1=127.0.0.1" in stream_section
     assert "NEKO_UDPMUX=59000" in stream_section
+    assert "NEKO_IMPLICIT_CONTROL=true" in stream_section
+    assert "PULSE_SERVER=unix:/tmp/pulseaudio.socket" in stream_section
     assert "NEKO_EPR=" not in stream_section
