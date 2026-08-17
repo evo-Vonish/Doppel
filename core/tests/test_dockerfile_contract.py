@@ -20,20 +20,23 @@ def test_runtime_installs_xcvt_for_dynamic_modelines():
     assert "xcvt" in packages
 
 
-def test_runtime_installs_glxinfo_for_grid3_renderer_gate():
+def test_tishen_stage_installs_glxinfo_in_isolated_probe_layer():
     dockerfile = (REPO_ROOT / "image" / "Dockerfile").read_text(encoding="utf-8")
     runtime_stage = dockerfile.split("FROM ${UBUNTU} AS runtime", 1)[1].split(
         "FROM runtime AS i18n", 1
     )[0]
-    display_packages = runtime_stage.split(
-        "install -y --no-install-recommends", 1
-    )[1].split("&& rm -rf /var/lib/apt/lists/*", 1)[0]
+    assert "mesa-utils" not in runtime_stage
 
-    packages = {
-        line.strip().removesuffix(" \\") for line in display_packages.splitlines()
-    }
+    tishen_stage = dockerfile.split("FROM chrome AS tishen", 1)[1].split(
+        "FROM tishen AS stream", 1
+    )[0]
+    probe_layer = tishen_stage.split("# 格 3 真机 GPU 门禁工具", 1)[1].split(
+        "# 拷贝镜像层自带资产", 1
+    )[0]
 
-    assert "mesa-utils" in packages
+    assert "apt-get ${APT_NETWORK_OPTS} update" in probe_layer
+    assert "mesa-utils" in probe_layer
+    assert "rm -rf /var/lib/apt/lists/*" in probe_layer
 
 
 def test_all_apt_transactions_retry_without_http_pipelining():
