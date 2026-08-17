@@ -157,6 +157,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--socket", required=True, help="hook.sock 路径")
     parser.add_argument("--payload-log", required=True, help="samples.jsonl 路径")
+    # Chrome 启动 native host 时会把调用方扩展 origin 作为尾随位置参数。
+    # 来源授权已由 manifest.allowed_origins 执行；host 只需接收该参数，避免
+    # argparse 在进入帧循环前退出。nargs="?" 仍会拒绝第二个未知位置参数。
+    parser.add_argument("origin", nargs="?", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     writer = _SocketWriter(args.socket)
