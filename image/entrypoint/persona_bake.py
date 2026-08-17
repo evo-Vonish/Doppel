@@ -549,7 +549,9 @@ def _write_native_host_wrapper(persona, session_id: str) -> str | None:
     0700 权限，exec 转发 stdio（"$@" 保留 chrome 附加参数透传位）。
     成功返回包装脚本路径；任何失败记日志返回 None（降级，不阻塞 bake）。
     """
-    argv = [HOOK_NATIVE_HOST,
+    # 显式经当前 Python 启动，避免 Windows checkout 的 CRLF 把脚本 shebang 解释为
+    # `/usr/bin/env python3\r`；native messaging 的 stdio/argv 契约不变。
+    argv = [sys.executable, HOOK_NATIVE_HOST,
             "--persona-id", persona.meta.id,
             "--session-id", session_id,
             "--socket", HOOK_SOCKET,
