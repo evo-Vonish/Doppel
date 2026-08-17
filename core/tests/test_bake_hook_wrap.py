@@ -340,6 +340,45 @@ def test_neko_shutdown_uses_sigint(bake):
     assert calls == [("signal", signal.SIGINT), ("wait", 4)]
 
 
+def test_shutdown_handler_only_records_first_signal(bake):
+    calls = []
+    bake._CHILDREN["chrome"] = types.SimpleNamespace(
+        poll=lambda: calls.append("poll"),
+        send_signal=lambda sig: calls.append(("signal", sig)),
+        wait=lambda timeout: calls.append(("wait", timeout)),
+    )
+    bake._SHUTDOWN_SIGNAL = None
+
+    bake._shutdown(signal.SIGTERM, None)
+    bake._shutdown(signal.SIGINT, None)
+
+    assert bake._SHUTDOWN_SIGNAL == signal.SIGTERM
+    assert calls == []
+
+
+def test_shutdown_children_stays_inside_docker_budget(bake, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        bake, "_terminate",
+        lambda name, timeout=10, sig=signal.SIGTERM:
+            calls.append((name, timeout, sig)),
+    )
+
+    bake._shutdown_children(include_chrome=True)
+
+    assert calls == [
+        ("chrome", 5, signal.SIGTERM),
+        ("neko", 4, signal.SIGINT),
+        ("pulseaudio", 2, signal.SIGTERM),
+        ("engine", 2, signal.SIGTERM),
+        ("hook_bus", 2, signal.SIGTERM),
+        ("fcitx5", 2, signal.SIGTERM),
+        ("observability", 2, signal.SIGTERM),
+        ("xorg", 2, signal.SIGTERM),
+    ]
+    assert sum(timeout for _, timeout, _ in calls) == 21
+
+
 def test_existing_display_sets_output_mode_before_framebuffer(bake, monkeypatch):
     persona = types.SimpleNamespace(
         display=types.SimpleNamespace(width=1366, height=768, dpr=1.0))

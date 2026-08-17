@@ -280,8 +280,9 @@ def test_bake_old_segments_untouched_string_level():
             "fcitx5 → observ → neko → chrome_launch") in _BAKE_SRC
     assert 'step7_6_engine(persona)  # SPEC-E §8：观测守护之后加挂引擎守护（失败降级跳过）' in _BAKE_SRC
     assert 'FORBIDDEN_FLAGS = ("--no-sandbox", "--remote-debugging-port")' in _BAKE_SRC
-    # 收尾登记 hook_bus（两处：SIGTERM 路径与 Chrome 退出路径）
-    assert _BAKE_SRC.count('_terminate("hook_bus")') == 2
+    # 信号/Chrome 自然退出共用同一个收尾序列，hook_bus 只登记一次。
+    assert _BAKE_SRC.count('_terminate("hook_bus", timeout=2)') == 1
+    assert "def _shutdown_children(*, include_chrome: bool)" in _BAKE_SRC
     # 新段调用紧随其后
     assert "step7_7_hook(persona)  # SPEC-E3 §2.3" in _BAKE_SRC
 
