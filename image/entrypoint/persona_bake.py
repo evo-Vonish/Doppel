@@ -60,6 +60,9 @@ CHROME_SINGLETON_FILES = ("SingletonCookie", "SingletonLock", "SingletonSocket")
 
 # 后台子进程登记表：名称 → Popen，供第 10 步 SIGTERM 收尾按序终止
 _CHILDREN: dict[str, subprocess.Popen] = {}
+# 信号处理器只写此标记；不可在处理器里重入 Popen.wait()/poll()，否则主线程正
+# 阻塞于同一个子进程 wait 时会发生可重入死锁。
+_SHUTDOWN_SIGNAL: int | None = None
 # 本进程是否为 dry-run（供 run_cmd 打计划而非执行）
 _DRY_RUN = False
 # M5 启动计时基准（SPEC-M5 §5）：脚本入口 time.monotonic()，main() 开头赋值
@@ -892,29 +895,40 @@ def _terminate(name: str, timeout: int = 10,
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         proc.kill()
-        proc.wait()
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            log(f"{name} SIGKILL 后仍未回收，继续退出容器")
     log(f"{name} 已停止")
 
 
 def _shutdown(signum, _frame) -> None:
-    """SIGTERM 收尾：Chrome → neko → PulseAudio → 其他守护，退出 0。"""
-    log(f"收到信号 {signum}，按序收尾")
-    _terminate("chrome")
+    """信号回调只登记关机请求；实际 Popen 收尾在正常主循环执行。"""
+    global _SHUTDOWN_SIGNAL
+    if _SHUTDOWN_SIGNAL is None:
+        log(f"收到信号 {signum}，准备按序收尾")
+        _SHUTDOWN_SIGNAL = signum
+
+
+def _shutdown_children(*, include_chrome: bool) -> None:
+    """在 Docker 30 秒宽限期内按依赖顺序收尾全部子进程。"""
+    if include_chrome:
+        _terminate("chrome", timeout=5)
     # neko v2 只监听 os.Interrupt（SIGINT）做 WebRTC/HTTP 优雅收尾。
-    _terminate("neko", sig=signal.SIGINT)
-    _terminate("pulseaudio")
-    _terminate("engine")
-    _terminate("hook_bus")
-    _terminate("fcitx5")
-    _terminate("observability")
-    _terminate("xorg")
-    sys.exit(0)
+    _terminate("neko", timeout=4, sig=signal.SIGINT)
+    _terminate("pulseaudio", timeout=2)
+    _terminate("engine", timeout=2)
+    _terminate("hook_bus", timeout=2)
+    _terminate("fcitx5", timeout=2)
+    _terminate("observability", timeout=2)
+    _terminate("xorg", timeout=2)
 
 
 def main() -> None:
-    global _DRY_RUN, _BOOT_T0
+    global _DRY_RUN, _BOOT_T0, _SHUTDOWN_SIGNAL
     # M5 启动计时基准（SPEC-M5 §5）：脚本入口即打点，entry 段 elapsed=0
     _BOOT_T0 = time.monotonic()
+    _SHUTDOWN_SIGNAL = None
     _boot_mark("entry")
     parser = argparse.ArgumentParser(description="替身容器 persona 烘焙器（SPEC §6）")
     parser.add_argument("--dry-run", action="store_true",
@@ -979,15 +993,19 @@ def main() -> None:
     except OSError as exc:
         fail(f"启动 Chrome 失败：{exc}")
     _boot_mark("chrome_launch")  # Chrome 已拉起（SPEC-M5 §5 末段）
-    rc = _CHILDREN["chrome"].wait()
+    # 不在这里使用阻塞式 wait()：SIGTERM 处理器若重入同一个 Popen 的
+    # wait()/poll()，会在 CPython 的 Popen 锁上自锁。短轮询让信号处理器只需
+    # 设置标记，所有进程操作都回到正常控制流执行。
+    while True:
+        rc = _CHILDREN["chrome"].poll()
+        if rc is not None:
+            break
+        if _SHUTDOWN_SIGNAL is not None:
+            _shutdown_children(include_chrome=True)
+            sys.exit(0)
+        time.sleep(0.2)
     log(f"Chrome 退出（rc={rc}），按序收尾后台进程（neko → PulseAudio → 引擎守护 → fcitx5 → 观测守护）")
-    _terminate("neko", sig=signal.SIGINT)
-    _terminate("pulseaudio")
-    _terminate("engine")
-    _terminate("hook_bus")
-    _terminate("fcitx5")
-    _terminate("observability")
-    _terminate("xorg")
+    _shutdown_children(include_chrome=False)
     sys.exit(rc)
 
 
