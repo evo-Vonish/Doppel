@@ -1,9 +1,15 @@
 """tshark JSON → Event 流离线测试（fixtures/observ/tshark_sample.json）。"""
 
+import json
+import subprocess
 from pathlib import Path
 
+import pytest
+
+from tishen.observ import decrypt
 from tishen.observ.decrypt import (
-    extract_handshakes, load_tshark_json, packets_to_events,
+    TsharkError, extract_handshakes, load_tshark_json, packets_to_events,
+    run_tshark,
 )
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "observ" / "tshark_sample.json"
@@ -13,6 +19,39 @@ def _events():
     packets = load_tshark_json(FIXTURE)
     return packets_to_events(
         packets, persona_id="p_test01", session_id="sess-1", shard="ring.pcap0")
+
+
+def test_run_tshark_keeps_complete_packets_before_truncated_tail(
+        monkeypatch, caplog):
+    packets = [{"_source": {"layers": {"frame": {"frame.number": "1"}}}}]
+    proc = subprocess.CompletedProcess(
+        args=["tshark"], returncode=2, stdout=json.dumps(packets),
+        stderr=("Running as user root.\n"
+                "tshark: capture appears to have been cut short in the middle "
+                "of a packet."))
+    monkeypatch.setattr(decrypt.shutil, "which", lambda name: "/usr/bin/tshark")
+    monkeypatch.setattr(decrypt.subprocess, "run", lambda *args, **kwargs: proc)
+
+    assert run_tshark("ring.pcap0") == packets
+    assert "保留此前 1 个完整包" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr"),
+    [
+        ("[{}]", "tshark: permission denied"),
+        ("[]", "tshark: file appears to have been cut short in the middle of a packet"),
+    ],
+)
+def test_run_tshark_rejects_other_nonzero_or_empty_tail(
+        monkeypatch, stdout, stderr):
+    proc = subprocess.CompletedProcess(
+        args=["tshark"], returncode=2, stdout=stdout, stderr=stderr)
+    monkeypatch.setattr(decrypt.shutil, "which", lambda name: "/usr/bin/tshark")
+    monkeypatch.setattr(decrypt.subprocess, "run", lambda *args, **kwargs: proc)
+
+    with pytest.raises(TsharkError, match="tshark 退出码 2"):
+        run_tshark("ring.pcap0")
 
 
 def test_event_types_cover_fixture():
