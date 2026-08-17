@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 from tishen.observ import store
-from tishen.observ.daemon import DaemonConfig, ObservDaemon
+from tishen.observ.daemon import (
+    DaemonConfig,
+    ObservDaemon,
+    _archive_path,
+    _shard_generation,
+)
 from tishen.observ.decrypt import load_tshark_json
 from tishen.observ.query import query_events
 
@@ -49,7 +54,7 @@ def sandbox(tmp_path):
         encrypted = []
 
         def fake_encrypt(path, recipient):
-            out = path.with_name(path.name + ".age")
+            out = _archive_path(path)
             out.write_bytes(b"age-encrypted:" + path.read_bytes())
             encrypted.append(path.name)
             return out
@@ -76,7 +81,7 @@ def test_run_once_processes_old_shards(sandbox):
     # 明文已删、密文就位；活动分片原样保留
     assert not shards[0].exists() and not shards[1].exists()
     assert shards[2].exists()
-    assert (shards[0].parent / "ring.pcap0.age").exists()
+    assert len(list(shards[0].parent.glob("ring.pcap0.*.age"))) == 1
     assert set(daemon._test_encrypted) == {"ring.pcap0", "ring.pcap1"}
     # 幂等：第二轮无待处理分片
     assert daemon.run_once()["processed"] == 0
@@ -86,7 +91,8 @@ def test_run_once_processes_old_shards(sandbox):
 def test_backpressure_skips_newest_with_gap(sandbox):
     """积压超限：只处理最旧 1 片，最新 2 片跳片并写 gap 事件标注区间。"""
     make_shards, make_daemon, events_dir = sandbox
-    make_shards(4)                               # 活动 1 + 积压 3，上限 1
+    shards = make_shards(4)                      # 活动 1 + 积压 3，上限 1
+    generations = [_shard_generation(path) for path in shards]
     daemon = make_daemon(backlog_limit=1)
     stats = daemon.run_once()
     assert stats["processed"] == 1
@@ -97,10 +103,44 @@ def test_backpressure_skips_newest_with_gap(sandbox):
     assert all("背压跳片" in r["summary"] for r in gaps)
     # 跳片分片台账记 gap，不再重处理
     conn = store.connect(events_dir / "events.db")
-    assert store.is_shard_processed(conn, "ring.pcap1")
-    assert store.is_shard_processed(conn, "ring.pcap2")
+    assert store.is_shard_processed(conn, generations[1])
+    assert store.is_shard_processed(conn, generations[2])
     conn.close()
     daemon.close()
+
+
+def test_reused_ring_slot_is_processed_as_new_generation(sandbox):
+    """环形槽位同名复用后，mtime/大小变化必须形成新代际，不得永久跳过。"""
+    make_shards, make_daemon, events_dir = sandbox
+    shards = make_shards(2)
+    old_generation = _shard_generation(shards[0])
+    daemon = make_daemon()
+    store.record_shard(daemon.conn, old_generation, "ok", "上一轮同名槽位")
+
+    old_mtime = shards[0].stat().st_mtime
+    shards[0].write_bytes(b"a different pcap generation")
+    os.utime(shards[0], (old_mtime + 1, old_mtime + 1))
+    new_generation = _shard_generation(shards[0])
+
+    assert new_generation != old_generation
+    assert daemon.run_once()["processed"] == 1
+    assert store.is_shard_processed(daemon.conn, new_generation)
+    daemon.close()
+
+
+def test_archive_name_is_unique_per_ring_generation(tmp_path):
+    """同名环形槽位的两轮明文必须映射到不同 age 归档名。"""
+    shard = tmp_path / "ring.pcap0"
+    shard.write_bytes(b"generation-one")
+    first = _archive_path(shard)
+
+    shard.write_bytes(b"generation-two-is-different")
+    os.utime(shard, ns=(shard.stat().st_atime_ns, shard.stat().st_mtime_ns + 1))
+    second = _archive_path(shard)
+
+    assert first != second
+    assert first.name.startswith("ring.pcap0.") and first.name.endswith(".age")
+    assert second.name.startswith("ring.pcap0.") and second.name.endswith(".age")
 
 
 def test_decrypt_failure_writes_gap_and_continues(sandbox):
