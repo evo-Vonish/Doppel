@@ -118,6 +118,25 @@ def test_extract_handshakes():
     assert rec.ts_ms == 1753600000120
 
 
+def test_extract_handshakes_normalizes_colon_random():
+    packets = [{
+        "_source": {"layers": {
+            "frame": {"frame.number": "9", "frame.time_epoch": "1753600000.5"},
+            "tcp": {"tcp.stream": "4"},
+            "tls": {
+                "tls.handshake.type": "1",
+                "tls.handshake.random": ":".join(["AB"] * 32),
+                "tls.handshake.extensions_server_name": "tls13.example",
+            },
+        }},
+    }]
+
+    rec = extract_handshakes(packets)[0]
+
+    assert rec.client_random == "ab" * 32
+    assert rec.sni == "tls13.example"
+
+
 def test_event_id_ulid_ordered_unique():
     """全部事件 event_id 为 26 字符 ULID 且互不重复。"""
     ids = [e.event_id for e in _events()]

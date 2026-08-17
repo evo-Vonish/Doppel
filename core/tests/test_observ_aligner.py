@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 
 from tishen.observ import keylog
-from tishen.observ.aligner import HandshakeRecord, align
+from tishen.observ.aligner import (
+    HandshakeRecord,
+    align,
+    normalize_client_random,
+)
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "observ"
 
@@ -40,6 +44,20 @@ def test_align_case_insensitive_and_empty():
     report = align([rec], {"a" * 64: "b" * 64})
     assert report.matched == 1
     assert align([], {}).coverage == 1.0
+
+
+def test_align_normalizes_tshark_colon_separated_random():
+    """tshark 的 aa:bb 格式须与 NSS keylog 的无分隔十六进制命中。"""
+    tshark_random = ":".join(["AB"] * 32)
+    nss_random = "ab" * 32
+    rec = HandshakeRecord(
+        client_random=tshark_random, sni="tls13.example", frame_number=7)
+
+    report = align([rec], {nss_random: "c" * 64})
+
+    assert normalize_client_random(tshark_random) == nss_random
+    assert report.matched == 1 and report.coverage == 1.0
+    assert report.no_key == []
 
 
 def test_align_report_as_dict_serializable():
