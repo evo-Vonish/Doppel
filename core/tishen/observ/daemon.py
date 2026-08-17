@@ -42,6 +42,19 @@ SHARD_NAME_RE = re.compile(r"\.pcap(ng)?\d*$")
 log = logging.getLogger("tishen.observ.daemon")
 
 
+def _shard_generation(path: Path) -> str:
+    """返回环形槽位的一次写入代际；文件名复用时仍保持唯一。"""
+    stat = path.stat()
+    return f"{path.name}@{stat.st_mtime_ns}:{stat.st_size}"
+
+
+def _archive_path(path: Path) -> Path:
+    """为一次分片代际生成不可碰撞的 age 归档名。"""
+    stat = path.stat()
+    return path.with_name(
+        f"{path.name}.{stat.st_mtime_ns}-{stat.st_size}.age")
+
+
 @dataclass
 class DaemonConfig:
     persona_id: str                       # 替身 id（事件 persona_id 字段）
@@ -71,10 +84,10 @@ def default_decrypt_fn(shard: Path, keylog_path: Path) -> list[dict]:
 
 
 def default_encrypt_fn(path: Path, recipient: str) -> Path:
-    """默认加密：age -r <recipient> -o <path>.age <path>。返回加密产物路径。"""
+    """默认加密：输出名携带分片代际，避免环形槽位复用时碰撞。"""
     if shutil.which("age") is None:
         raise RuntimeError("age 不在 PATH 中（镜像须预装，Dockerfile L4 层）")
-    out = path.with_name(path.name + ".age")
+    out = _archive_path(path)
     proc = subprocess.run(
         ["age", "-r", recipient, "-o", str(out), str(path)],
         capture_output=True, text=True, timeout=300)
@@ -145,7 +158,8 @@ class ObservDaemon:
         active = shards[-1]  # mtime 最新 = tcpdump 正在写的活动分片
         pending = []
         for shard in shards[:-1]:
-            if store.is_shard_processed(self.conn, shard.name):
+            if store.is_shard_processed(
+                    self.conn, _shard_generation(shard)):
                 continue
             pending.append(shard)
         if pending:
@@ -200,6 +214,7 @@ class ObservDaemon:
         任何步骤失败转 gap 事件并继续（不抛出）。
         """
         cfg = self.config
+        shard_generation = _shard_generation(shard)
         recipient = _resolve_age_recipient(cfg)
         # ② keylog 重载（每片一载：浏览器持续追加，索引必须新鲜）
         keylog_map = keylog.parse_keylog(cfg.keylog_path)
@@ -224,7 +239,7 @@ class ObservDaemon:
             written = store.insert_events(self.conn, events)
             note = (f"覆盖率 {report.matched}/{report.total}；"
                     f"事件 {written} 条")
-            store.record_shard(self.conn, shard.name, "ok", note)
+            store.record_shard(self.conn, shard_generation, "ok", note)
             log.info("分片 %s 处理完成：%s", shard.name, note)
             status = "ok"
             stats = {"events": written, "coverage": report.coverage,
@@ -235,7 +250,7 @@ class ObservDaemon:
                       summary=f"解密失败：分片 {shard.name} 处理异常"
                               f"（{type(e).__name__}），区间内容不可见",
                       evidence_ref=f"pcap:{shard.name}")
-            store.record_shard(self.conn, shard.name, "gap",
+            store.record_shard(self.conn, shard_generation, "gap",
                                f"{type(e).__name__}: {e}"[:300])
             log.exception("分片 %s 处理异常（已记 gap，继续）：%s", shard.name, e)
             stats = {"events": 1, "coverage": 0.0, "status": "gap"}
@@ -257,6 +272,7 @@ class ObservDaemon:
             skip = pending[cfg.backlog_limit:]
             pending = pending[:cfg.backlog_limit]
             for shard in skip:
+                shard_generation = _shard_generation(shard)
                 ts = int(shard.stat().st_mtime * 1000)
                 self._gap(
                     ts=ts,
@@ -264,7 +280,8 @@ class ObservDaemon:
                             f"超过上限 {cfg.backlog_limit}，分片 {shard.name}"
                             " 未解密，区间内容不可见",
                     evidence_ref=f"pcap:{shard.name}")
-                store.record_shard(self.conn, shard.name, "gap", "背压跳片")
+                store.record_shard(
+                    self.conn, shard_generation, "gap", "背压跳片")
                 self._encrypt_and_shred(shard, _resolve_age_recipient(cfg))
                 stats["skipped"] += 1
                 stats["events"] += 1

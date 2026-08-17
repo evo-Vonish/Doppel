@@ -41,7 +41,7 @@ CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(event_type, ts);
 
 -- 守护进程分片处理台账（§3.1 之外的内部簿记，不属事件 Schema）
 CREATE TABLE IF NOT EXISTS processed_shards (
-    shard        TEXT PRIMARY KEY,    -- 分片文件名
+    shard        TEXT PRIMARY KEY,    -- 分片代际 id（文件名@mtime_ns:大小）
     processed_at INTEGER NOT NULL,    -- 处理完成 Unix 毫秒
     status       TEXT NOT NULL,       -- ok / gap（异常或背压跳片）
     note         TEXT                 -- 说明（覆盖率、异常摘要）
@@ -97,7 +97,7 @@ def cleanup(conn: sqlite3.Connection, retain_days: int,
 
 def record_shard(conn: sqlite3.Connection, shard: str, status: str,
                  note: str = "") -> None:
-    """登记分片处理结果（幂等：同分片重处理时覆盖旧记录）。"""
+    """登记分片代际处理结果（幂等：同代重处理时覆盖旧记录）。"""
     now_ms = time.time_ns() // 1_000_000
     with conn:
         conn.execute(
@@ -107,7 +107,7 @@ def record_shard(conn: sqlite3.Connection, shard: str, status: str,
 
 
 def is_shard_processed(conn: sqlite3.Connection, shard: str) -> bool:
-    """查询分片是否已处理过（daemon 幂等：崩溃重启不重复解密）。"""
+    """查询分片代际是否已处理过（崩溃重启不重复解密）。"""
     cur = conn.execute(
         "SELECT 1 FROM processed_shards WHERE shard = ?", (shard,))
     return cur.fetchone() is not None
