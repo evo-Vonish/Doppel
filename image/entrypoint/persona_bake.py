@@ -754,7 +754,9 @@ def build_neko_argv(persona) -> list[str]:
         NEKO_BIN,
         "serve",
         "--static=/var/www",
-        f"--screen={persona.display.width}x{persona.display.height}@30",
+        # persona Xorg 用 CVT 60Hz modeline（xrandr 可显示 59.xx，XRandR
+        # API 以整数 60 上报）；neko 要求该刷新率必须已在 X 中存在。
+        f"--screen={persona.display.width}x{persona.display.height}@60",
         "--iceserver=",
     ]
 
