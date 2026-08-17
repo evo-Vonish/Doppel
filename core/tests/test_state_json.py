@@ -93,12 +93,14 @@ def test_migration_from_m1_schema(home, tmp_path):
 
 
 def test_gpu_passthrough_args_wsl_grid3():
-    """WSL2 格 3 必须注入 dxg、两处共享目录与用户态库搜索路径。"""
+    """WSL2 格 3 必须注入 dxg、共享目录、用户态库与 D3D12 驱动选择。"""
     argv = docker_ctl.gpu_passthrough_args("wsl")
     assert argv[:2] == ["--device", "/dev/dxg"]
     assert "type=bind,source=/usr/lib/wsl,target=/usr/lib/wsl,readonly" in argv
     assert "type=bind,source=/mnt/wslg,target=/mnt/wslg,readonly" in argv
     assert "LD_LIBRARY_PATH=/usr/lib/wsl/lib" in argv
+    assert "GALLIUM_DRIVER=d3d12" in argv
+    assert "MESA_LOADER_DRIVER_OVERRIDE=d3d12" in argv
     assert "/dev/dri" not in argv
 
 
@@ -126,6 +128,8 @@ def test_build_run_command_uses_detected_wsl_gpu(monkeypatch, home):
     assert "/dev/dxg" in argv
     assert "/dev/dri" not in argv
     assert "LD_LIBRARY_PATH=/usr/lib/wsl/lib" in argv
+    assert "GALLIUM_DRIVER=d3d12" in argv
+    assert "MESA_LOADER_DRIVER_OVERRIDE=d3d12" in argv
 
 
 def test_build_run_command_neko_args(home):
