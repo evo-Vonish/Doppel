@@ -62,3 +62,22 @@ def test_hook_main_world_script_is_present_in_extension_pack_directory():
         "COPY image/hook/tishen_hook.js "
         "/opt/tishen/hook-ext/tishen_hook.js"
     ) in dockerfile
+
+
+def test_stream_stage_uses_digest_pinned_official_neko_assets():
+    dockerfile = (REPO_ROOT / "image" / "Dockerfile").read_text(encoding="utf-8")
+    stream_section = dockerfile.split("# ── L5 流层", 1)[1]
+
+    assert (
+        "FROM ghcr.io/m1k1o/neko/base:2.8.0@sha256:"
+        "c952e71cd81c1e16eb46e1ca6da688c43cfc8c46633baaf4c4f2e93a4b293324 "
+        "AS neko_v2"
+    ) in stream_section
+    assert "COPY --from=neko_v2 /usr/bin/neko /opt/neko/neko" in stream_section
+    assert "COPY --from=neko_v2 /var/www/ /var/www/" in stream_section
+    assert 'grep -F "Version ${NEKO_VERSION}"' in stream_section
+    assert 'tishen.neko.version="${NEKO_VERSION}"' in stream_section
+
+    # v2.8.0 未发布 GitHub tar asset，也不得再允许空 SHA 绕过校验。
+    assert "releases/download" not in stream_section
+    assert "NEKO_SHA256" not in stream_section
