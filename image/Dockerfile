@@ -24,6 +24,7 @@ RUN apt-get ${APT_NETWORK_OPTS} update && apt-get ${APT_NETWORK_OPTS} install -y
     x11-xserver-utils \
     x11-utils \
     xcvt \
+    mesa-utils \
     pulseaudio \
     dbus-x11 \
     libgstreamer1.0-0 \

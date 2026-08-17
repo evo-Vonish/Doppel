@@ -77,6 +77,11 @@ def gpu_passthrough_args(backend: str | None = None) -> list[str]:
             "--mount", "type=bind,source=/usr/lib/wsl,target=/usr/lib/wsl,readonly",
             "--mount", "type=bind,source=/mnt/wslg,target=/mnt/wslg,readonly",
             "--env", "LD_LIBRARY_PATH=/usr/lib/wsl/lib",
+            # Ubuntu Mesa 默认会给 dummy Xorg 选择 llvmpipe；WSL 的 dxg
+            # 设备与 D3D12 用户态库即使已挂载也不会自动切换。显式选择
+            # Gallium D3D12，确保 Chrome/GLX 使用宿主 GPU 而非软渲染。
+            "--env", "GALLIUM_DRIVER=d3d12",
+            "--env", "MESA_LOADER_DRIVER_OVERRIDE=d3d12",
         ]
     if selected in {"dri", "missing"}:
         return ["--device", "/dev/dri"]
