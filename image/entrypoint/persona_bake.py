@@ -48,6 +48,7 @@ PULSEAUDIO_BIN = "/usr/bin/pulseaudio"
 PULSEAUDIO_SOCKET = "/tmp/pulseaudio.socket"
 PULSEAUDIO_SERVER = f"unix:{PULSEAUDIO_SOCKET}"
 DISPLAY_ID = ":0"                               # 虚拟显示器编号
+X_STALE_PATHS = (Path("/tmp/.X0-lock"), Path("/tmp/.X11-unix/X0"))
 X_READY_TIMEOUT = 15                            # 等待 X 就绪秒数
 CHROME_UID = 1000                               # ubuntu:noble 镜像内固定用户
 CHROME_GID = 1000
@@ -365,6 +366,15 @@ def _ensure_x_server(config_path: str = XORG_CONFIG) -> bool:
     """虚拟显示器未起时用 dummy 配置拉起 Xorg（坑位 5：dummy 默认分辨率不可信）。"""
     if _x_ready():
         return False
+    # 容器若曾被宿主 SIGKILL/掉电，overlay 层会保留 Xorg 的 lock/socket。
+    # 只在 xrandr 已确认 X 不可用时清理 :0 的两个精确路径，避免误伤活会话。
+    for stale in X_STALE_PATHS:
+        try:
+            if stale.exists() or stale.is_symlink():
+                stale.unlink()
+                log(f"已清理陈旧 Xorg 文件：{stale}")
+        except OSError as exc:
+            fail(f"清理陈旧 Xorg 文件失败 {stale}：{exc}")
     log(f"未检测到可用 X 服务，使用虚拟显示器配置拉起：Xorg {DISPLAY_ID} -config {config_path}")
     try:
         _CHILDREN["xorg"] = subprocess.Popen(
@@ -872,11 +882,12 @@ def step9_forbidden_check(chrome_argv: list[str]) -> None:
 
 
 # ── 第 10 步：SIGTERM 收尾 ────────────────────────────────────────────────
-def _terminate(name: str, timeout: int = 10) -> None:
+def _terminate(name: str, timeout: int = 10,
+               sig: signal.Signals = signal.SIGTERM) -> None:
     proc = _CHILDREN.get(name)
     if proc is None or proc.poll() is not None:
         return
-    proc.terminate()
+    proc.send_signal(sig)
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -889,7 +900,8 @@ def _shutdown(signum, _frame) -> None:
     """SIGTERM 收尾：Chrome → neko → PulseAudio → 其他守护，退出 0。"""
     log(f"收到信号 {signum}，按序收尾")
     _terminate("chrome")
-    _terminate("neko")
+    # neko v2 只监听 os.Interrupt（SIGINT）做 WebRTC/HTTP 优雅收尾。
+    _terminate("neko", sig=signal.SIGINT)
     _terminate("pulseaudio")
     _terminate("engine")
     _terminate("hook_bus")
@@ -969,7 +981,7 @@ def main() -> None:
     _boot_mark("chrome_launch")  # Chrome 已拉起（SPEC-M5 §5 末段）
     rc = _CHILDREN["chrome"].wait()
     log(f"Chrome 退出（rc={rc}），按序收尾后台进程（neko → PulseAudio → 引擎守护 → fcitx5 → 观测守护）")
-    _terminate("neko")
+    _terminate("neko", sig=signal.SIGINT)
     _terminate("pulseaudio")
     _terminate("engine")
     _terminate("hook_bus")

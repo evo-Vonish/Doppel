@@ -24,6 +24,9 @@ from .persona import Persona
 # shm-size 基线：Docker 默认 64MB 必崩 Chrome（M1 方案 §11 坑位 1）
 SHM_SIZE = "2g"
 SHM_SIZE_BYTES = 2 * 1024 ** 3
+# persona-bake 要先收尾 Chrome，再优雅停 Neko/PulseAudio/观测守护。
+# Docker 默认 10s 会在 Chrome 单进程等待窗口到期时立即 SIGKILL PID 1。
+STOP_TIMEOUT_SECONDS = 30
 
 # 镜像默认标签（M1 方案 §3 标签策略）；CLI 可用 TISHEN_IMAGE 覆盖
 DEFAULT_IMAGE_TAG = "tishen/platform:latest-stable"
@@ -101,6 +104,7 @@ def build_run_command(persona: Persona, image_tag: str,
     args = [
         "docker", "run", "-d",
         "--name", container_name(pid),
+        f"--stop-timeout={STOP_TIMEOUT_SECONDS}",
         # Chrome profile 的 SingletonLock 编码 hostname；按 persona 固定，避免容器重建
         # 时随机容器 ID 被误判成“另一台机器正在使用 profile”。
         "--hostname", container_name(pid),
