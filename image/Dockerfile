@@ -192,9 +192,10 @@ LABEL tishen.stream.enabled="true" \
     tishen.neko.version="${NEKO_VERSION}"
 
 # neko 运行时默认（M2 方案 §二.3：本地优先，零外联）：
-# 容器内 HTTP/WebSocket 监听 8080；WebRTC 走 host candidate（本机 loopback），不配 STUN/TURN。
+# 容器内 HTTP/WebSocket 监听 8080；WebRTC 走单 UDP mux host candidate
+#（本机 loopback），不配 STUN/TURN。
 # 口令纪律：NEKO_PASSWORD 不入镜像，运行时经环境变量注入（docker_ctl 创建替身时生成随机口令）。
 ENV NEKO_BIND=:8080 \
     NEKO_ICELITE=1 \
     NEKO_NAT1TO1=127.0.0.1 \
-    NEKO_EPR=59000-59100
+    NEKO_UDPMUX=59000

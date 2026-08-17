@@ -742,14 +742,26 @@ def step7_7_hook(persona) -> None:
 # 口令纪律：NEKO_PASSWORD 只经环境变量注入（docker run -e，创建替身时随机生成），
 # stream 镜像中缺失则拒绝启动（无人值守的流服务不允许以默认/空口令裸奔）；
 # M1/P1 的 tishen 四层镜像不含二进制，明确跳过本步骤。
-def build_neko_argv() -> list[str]:
-    """组装 neko 启动行；NEKO_BIND/ICELITE/NAT1TO1/EPR 走镜像 ENV 默认值。"""
-    return [NEKO_BIN, "serve"]
+def build_neko_argv(persona) -> list[str]:
+    """组装 neko 启动行。
+
+    屏幕尺寸必须与 persona/Xorg 一致；web client 与 server 由同一官方镜像拷贝。
+    ``--iceserver=`` 利用 neko v2 的 StringSlice 空值语义覆盖默认 Google
+    STUN，保证本机回环模式不产生额外网络依赖。其余 bind/ICELite/
+    NAT1TO1/UDPMUX 走镜像 ENV 默认值。
+    """
+    return [
+        NEKO_BIN,
+        "serve",
+        "--static=/var/www",
+        f"--screen={persona.display.width}x{persona.display.height}@30",
+        "--iceserver=",
+    ]
 
 
-def step7_5_neko() -> None:
+def step7_5_neko(persona) -> None:
     neko_password = os.environ.get("NEKO_PASSWORD", "")
-    argv = build_neko_argv()
+    argv = build_neko_argv(persona)
     line = " ".join(shlex.quote(a) for a in argv)
     if _DRY_RUN:
         # dry-run 只打印计划不真启动；口令永不明文上屏（含计划打印）
@@ -763,6 +775,11 @@ def step7_5_neko() -> None:
     if not neko_password:
         fail("NEKO_PASSWORD 环境变量缺失：neko 流服务拒绝以无口令状态启动。"
              "请在 docker run 时经 -e NEKO_PASSWORD=... 注入（由 tishen CLI 创建替身时随机生成）", 2)
+    if neko_password.lower() in {"neko", "admin"}:
+        fail("NEKO_PASSWORD 不得使用 neko 官方默认口令；请使用 tishen CLI 生成的随机口令", 2)
+    # embed_url 以 admin 身份登录；将同一随机密钥注入 admin 口令，
+    # 避免 neko 的官方默认值 "admin"。环境继承给子进程，不经 argv/ps 暴露。
+    os.environ["NEKO_PASSWORD_ADMIN"] = neko_password
     spawn("neko", argv, "neko 流服务（WebRTC 推流/输入回注）")
 
 
@@ -868,7 +885,7 @@ def main() -> None:
     chrome_env = prepare_chrome_user()
     step7_6_engine(persona)  # SPEC-E §8：观测守护之后加挂引擎守护（失败降级跳过）
     step7_7_hook(persona)  # SPEC-E3 §2.3：引擎守护之后加挂 JS hook 层（失败降级跳过）
-    step7_5_neko()
+    step7_5_neko(persona)
     _boot_mark("neko")
 
     # 第 8/9 步：组装启动行 + 禁项自检
