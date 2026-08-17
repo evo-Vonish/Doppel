@@ -70,6 +70,11 @@ class AlignmentReport:
         }
 
 
+def normalize_client_random(value: str) -> str:
+    """统一 NSS 无分隔与 tshark 冒号分隔的 ClientHello random。"""
+    return str(value).replace(":", "").lower()
+
+
 def align(handshakes, keylog_map: dict[str, str]) -> AlignmentReport:
     """握手清单 ↔ keylog 映射对齐，输出覆盖率报告。
 
@@ -79,12 +84,12 @@ def align(handshakes, keylog_map: dict[str, str]) -> AlignmentReport:
     - 匹配不区分大小写（tshark 输出十六进制大小写依版本不定）。
     """
     report = AlignmentReport()
-    normalized = {k.lower(): v for k, v in keylog_map.items()}
+    normalized = {normalize_client_random(k): v for k, v in keylog_map.items()}
     for rec in handshakes:
         report.total += 1
         cov = report.per_host.setdefault(rec.host, HostCoverage())
         cov.total += 1
-        if rec.client_random.lower() in normalized:
+        if normalize_client_random(rec.client_random) in normalized:
             report.matched += 1
             cov.matched += 1
         else:

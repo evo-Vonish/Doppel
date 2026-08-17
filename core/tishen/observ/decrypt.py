@@ -20,7 +20,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .aligner import HandshakeRecord
+from .aligner import HandshakeRecord, normalize_client_random
 from .events import Event
 
 log = logging.getLogger("tishen.observ.decrypt")
@@ -196,7 +196,7 @@ def extract_handshakes(packets: list[dict]) -> list[HandshakeRecord]:
         frame = layers.get("frame", {})
         tcp = layers.get("tcp", {})
         records.append(HandshakeRecord(
-            client_random=str(random_hex).lower(),
+            client_random=normalize_client_random(str(random_hex)),
             sni=_get(tls, "tls.handshake.extensions_server_name",
                      "tls.handshake.extensions.server_name"),
             ts_ms=_ts_ms(frame),
