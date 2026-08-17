@@ -15,12 +15,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import subprocess
 from pathlib import Path
 
 from .aligner import HandshakeRecord
 from .events import Event
+
+log = logging.getLogger("tishen.observ.decrypt")
+
+_TRUNCATED_TAIL_WARNING = (
+    "appears to have been cut short in the middle of a packet")
 
 # 视为下载的响应 Content-Type（另加 Content-Disposition: attachment 判定）
 _DOWNLOAD_CONTENT_TYPES = {
@@ -54,15 +60,28 @@ def run_tshark(pcap_path, keylog_path=None, timeout: int = 300) -> list[dict]:
         )
     except subprocess.TimeoutExpired as e:
         raise TsharkError(f"tshark 处理超时（>{timeout}s）：{pcap_path}") from e
-    if proc.returncode != 0:
-        raise TsharkError(
-            f"tshark 退出码 {proc.returncode}：{proc.stderr.strip()[:500]}")
     try:
         packets = json.loads(proc.stdout or "[]")
     except json.JSONDecodeError as e:
         raise TsharkError(f"tshark 输出不是合法 JSON：{e}") from e
     if not isinstance(packets, list):
         raise TsharkError("tshark JSON 顶层不是数组")
+    if proc.returncode != 0:
+        stderr = proc.stderr.strip()
+        # tcpdump 收尾可能只留下最后一个未写完的包。tshark 此时返回 2，
+        # 但此前完整包仍会形成合法 JSON；仅对这一精确告警降级接纳，避免
+        # 因一个尾包丢弃整片其余证据。空输出或任何其他非零错误仍失败闭合。
+        recoverable_tail = (
+            proc.returncode == 2
+            and _TRUNCATED_TAIL_WARNING in stderr
+            and bool(packets)
+        )
+        if not recoverable_tail:
+            raise TsharkError(
+                f"tshark 退出码 {proc.returncode}：{stderr[:500]}")
+        log.warning(
+            "tshark 检测到尾部半包，保留此前 %d 个完整包：%s",
+            len(packets), pcap_path)
     return packets
 
 
