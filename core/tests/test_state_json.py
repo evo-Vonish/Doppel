@@ -151,6 +151,7 @@ def test_build_run_command_neko_args(home):
     assert argv[argv.index("-e") + 1] == "NEKO_PASSWORD=pw-xyz"
     # M1 基线不回归
     assert f"--shm-size={docker_ctl.SHM_SIZE}" in argv
+    assert f"--stop-timeout={docker_ctl.STOP_TIMEOUT_SECONDS}" in argv
     assert argv[argv.index("--hostname") + 1] == docker_ctl.container_name(persona.meta.id)
     assert argv[argv.index("--add-host") + 1] == "host.docker.internal:host-gateway"
     assert "--no-sandbox" not in " ".join(argv)

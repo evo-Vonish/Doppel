@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import signal
 import shlex
 import shutil
 import stat
@@ -288,6 +289,55 @@ def test_display_starts_xorg_with_exact_persona_config(bake, monkeypatch):
     assert calls[0] == ("config", 1366, 768)
     assert calls[1] == ("ensure", "/tmp/exact.conf")
     assert calls[2][0:2] == ("cmd", ["xrandr", "--fb", "1366x768"])
+
+
+def test_xorg_restart_removes_only_configured_stale_files(
+        bake, monkeypatch, tmp_path):
+    lock = tmp_path / ".X0-lock"
+    socket = tmp_path / "X0"
+    lock.write_text("old pid", encoding="utf-8")
+    socket.write_text("old socket", encoding="utf-8")
+    readiness = iter([False, True])
+    popen_calls = []
+
+    monkeypatch.setattr(bake, "X_STALE_PATHS", (lock, socket))
+    monkeypatch.setattr(bake, "_x_ready", lambda: next(readiness))
+    monkeypatch.setattr(
+        bake.subprocess,
+        "Popen",
+        lambda argv, **kwargs: popen_calls.append((argv, kwargs)) or
+        types.SimpleNamespace(poll=lambda: None, returncode=None),
+    )
+
+    assert bake._ensure_x_server("/tmp/persona.conf") is True
+    assert not lock.exists() and not socket.exists()
+    assert popen_calls[0][0] == [
+        "Xorg", bake.DISPLAY_ID, "-config", "/tmp/persona.conf", "-noreset",
+    ]
+
+
+def test_live_xorg_never_removes_lock_files(bake, monkeypatch, tmp_path):
+    lock = tmp_path / ".X0-lock"
+    lock.write_text("live pid", encoding="utf-8")
+    monkeypatch.setattr(bake, "X_STALE_PATHS", (lock,))
+    monkeypatch.setattr(bake, "_x_ready", lambda: True)
+
+    assert bake._ensure_x_server("/tmp/persona.conf") is False
+    assert lock.read_text(encoding="utf-8") == "live pid"
+
+
+def test_neko_shutdown_uses_sigint(bake):
+    calls = []
+    proc = types.SimpleNamespace(
+        poll=lambda: None,
+        send_signal=lambda sig: calls.append(("signal", sig)),
+        wait=lambda timeout: calls.append(("wait", timeout)),
+    )
+    bake._CHILDREN["neko"] = proc
+
+    bake._terminate("neko", timeout=4, sig=signal.SIGINT)
+
+    assert calls == [("signal", signal.SIGINT), ("wait", 4)]
 
 
 def test_existing_display_sets_output_mode_before_framebuffer(bake, monkeypatch):
