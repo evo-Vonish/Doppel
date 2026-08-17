@@ -149,10 +149,12 @@ def test_chrome_uses_explicit_persona_proxy_only_when_configured(bake):
     )
     argv = bake.build_chrome_argv(persona, "mesa")
     assert "--proxy-server=http://host.docker.internal:11089" in argv
+    assert "--proxy-bypass-list=host.docker.internal;localhost;127.0.0.1" in argv
 
     persona.proxy = None
     argv = bake.build_chrome_argv(persona, "mesa")
     assert not any(arg.startswith("--proxy-server=") for arg in argv)
+    assert not any(arg.startswith("--proxy-bypass-list=") for arg in argv)
 
 
 def test_hook_bus_removes_stale_volume_socket_before_spawn_and_handoff():
