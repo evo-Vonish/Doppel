@@ -206,7 +206,8 @@ def test_host_subprocess_end_to_end(tmp_path):
         [sys.executable, str(HOST_PATH),
          "--persona-id", "p_e2e", "--session-id", "sess-e2e",
          "--socket", str(sock_path),
-         "--payload-log", str(tmp_path / "samples.jsonl")],
+         "--payload-log", str(tmp_path / "samples.jsonl"),
+         "chrome-extension://bcabojndboldhfndgfiocodkhgahfckp/"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     try:
         proc.stdin.write(_frame(_event_msg(injected_late=True)))
