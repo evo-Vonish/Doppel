@@ -172,30 +172,24 @@ ENTRYPOINT ["/opt/tishen/entrypoint/persona-bake"]
 # ── L5 流层：neko v2 server 二进制（M2 画面回显，SPEC-M2M3 §1.1）────────────
 # 独立 stage 便于单独重建（M2 方案 §二集成要点 1：合入 neko 是「补一块二进制」，不换底座）。
 # neko 只负责抓屏推流与输入回注；Chrome 生命周期仍归 persona-bake 编排。
+# 官方 GHCR amd64 manifest：tag 便于审计版本，digest 令实际输入不可漂移。
+# 来源：https://github.com/m1k1o/neko 的官方 ghcr-amd64 发布流水线。
+FROM ghcr.io/m1k1o/neko/base:2.8.0@sha256:c952e71cd81c1e16eb46e1ca6da688c43cfc8c46633baaf4c4f2e93a4b293324 AS neko_v2
+
 FROM tishen AS stream
 
-# 锁定 v2 稳定系具体 tag（v3 有 issue #598 高延迟 bug，禁入）；
-# 构建前必须核实 release 页面上的真实版本号与 tar 包 SHA256 并填入下方 ARG——切片期纪律：
-# NEKO_SHA256 为占位，未填则构建打印警告但不中断（便于离线/冒烟构建）；
-# 进入真实验收前必须填实，否则推流二进制来源不可信（原则：供应链可校验）。
+# 锁定 v2 稳定系具体 tag（v3 有 issue #598 高延迟 bug，禁入）。
+# v2.8.0 的 GitHub release 没有 tar asset；从同版本官方 GHCR image 按
+# amd64 manifest digest 拷贝 server 与匹配的 web client，避免虚假 URL 与空校验放行。
 ARG NEKO_VERSION=2.8.0
-ARG NEKO_SHA256=""
+COPY --from=neko_v2 /usr/bin/neko /opt/neko/neko
+COPY --from=neko_v2 /var/www/ /var/www/
+RUN test -x /opt/neko/neko \
+    && test -f /var/www/index.html \
+    && /opt/neko/neko --version | grep -F "Version ${NEKO_VERSION}"
 
-# 从 neko 官方 GitHub release 拉取 linux amd64 server 二进制 tar 包；
-# SHA256 校验逻辑就位：填了 NEKO_SHA256 则强校验（不符即构建失败），未填则警告放行（切片期）。
-RUN curl -fSL -o /tmp/neko.tar.gz \
-    "https://github.com/m1k1o/neko/releases/download/v${NEKO_VERSION}/neko_${NEKO_VERSION}_linux_amd64.tar.gz" \
-    && if [ -n "${NEKO_SHA256}" ]; then \
-        echo "${NEKO_SHA256}  /tmp/neko.tar.gz" | sha256sum -c -; \
-    else \
-        echo "警告：NEKO_SHA256 未填，跳过 neko 二进制完整性校验（仅限切片期冒烟构建）" >&2; \
-    fi \
-    && mkdir -p /opt/neko \
-    && tar -xzf /tmp/neko.tar.gz -C /opt/neko \
-    && chmod +x /opt/neko/neko \
-    && rm -f /tmp/neko.tar.gz
-
-LABEL tishen.stream.enabled="true"
+LABEL tishen.stream.enabled="true" \
+    tishen.neko.version="${NEKO_VERSION}"
 
 # neko 运行时默认（M2 方案 §二.3：本地优先，零外联）：
 # 容器内 HTTP/WebSocket 监听 8080；WebRTC 走 host candidate（本机 loopback），不配 STUN/TURN。
