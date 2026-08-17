@@ -782,7 +782,10 @@ def build_chrome_argv(persona, gpu_vendor: str) -> list[str]:
     if persona.proxy is not None:
         # V10 已限制为 http/socks5 端点；显式交给 Chrome，避免依赖容器外的
         # “全局代理/透明代理”假设（Docker bridge 通常不会继承宿主 TUN 路径）。
+        # 本机验收 harness 经 host-gateway 提供，不得送给远端代理解析；只绕过
+        # Docker/loopback 本地域名，外部请求仍全部经过 persona proxy。
         argv.append(f"--proxy-server={persona.proxy}")
+        argv.append("--proxy-bypass-list=host.docker.internal;localhost;127.0.0.1")
     return argv
 
 
