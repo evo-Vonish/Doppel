@@ -245,8 +245,11 @@ def step2_timezone(persona) -> None:
 def step3_locale(persona) -> None:
     locale = persona.region.locale
     languages = persona.region.languages
-    os.environ["LANG"] = f"{locale}.UTF-8"
-    os.environ["LC_ALL"] = f"{locale}.UTF-8"
+    # persona/Chrome 使用 BCP 47（en-CA），glibc locale 名使用下划线
+    #（en_CA.UTF-8）。把两种命名边界分开，避免 setlocale 静默回退 C.UTF-8。
+    posix_locale = f"{locale.replace('-', '_')}.UTF-8"
+    os.environ["LANG"] = posix_locale
+    os.environ["LC_ALL"] = posix_locale
     # LANGUAGE 依 languages 列表拼冒号串（Accept-Language 顺序即指纹，保持同序）
     os.environ["LANGUAGE"] = ":".join(languages)
     log(f"locale 已烘焙：LANG={os.environ['LANG']}，LANGUAGE={os.environ['LANGUAGE']}")
