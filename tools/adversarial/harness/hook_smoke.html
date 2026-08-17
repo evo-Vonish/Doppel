@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tishen Hook Smoke RUNNING</title>
+</head>
+<body>
+  <h1>Tishen hook real-machine smoke</h1>
+  <pre id="result">running</pre>
+  <canvas id="canvas" width="32" height="32" hidden></canvas>
+  <script>
+    "use strict";
+
+    (async function run() {
+      const completed = [];
+
+      document.getElementById("canvas").toDataURL();
+      completed.push("api_call:canvas.toDataURL");
+
+      localStorage.setItem("__tishen_hook_smoke", "probe-value");
+      localStorage.removeItem("__tishen_hook_smoke");
+      completed.push("storage_write:localStorage.setItem");
+
+      const workerUrl = URL.createObjectURL(new Blob([
+        "postMessage('ready')"
+      ], { type: "text/javascript" }));
+      await new Promise((resolve, reject) => {
+        const worker = new Worker(workerUrl);
+        worker.onmessage = () => {
+          worker.terminate();
+          resolve();
+        };
+        worker.onerror = reject;
+      });
+      completed.push("worker_spawn:blob");
+
+      const emptyWasmModule = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+      await WebAssembly.instantiate(emptyWasmModule, {});
+      completed.push("wasm_load:WebAssembly.instantiate");
+
+      // The hook samples Blob URLs asynchronously; defer revocation so the
+      // observe-only sampler can read the worker source without delaying it.
+      setTimeout(() => URL.revokeObjectURL(workerUrl), 2000);
+
+      document.getElementById("result").textContent = completed.join("\n");
+      document.title = "Tishen Hook Smoke DONE";
+    }()).catch((error) => {
+      document.getElementById("result").textContent = String(error && error.stack || error);
+      document.title = "Tishen Hook Smoke FAILED";
+    });
+  </script>
+</body>
+</html>
