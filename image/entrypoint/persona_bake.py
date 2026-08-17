@@ -5,7 +5,7 @@
 门禁复验 → 时区 → locale → 字体激活 → 显示 → 输入法 → 观测 → 7.5 neko 流服务 → Chrome 启动行 → 禁项自检 → SIGTERM 收尾。
 
 M2 进程启动顺序固定（M2 方案 §二.2，persona-bake 统一收口编排）：
-    Xorg(dummy) → xrandr 按 persona 设分辨率 → PulseAudio → fcitx5 → neko server → Chrome
+    Xorg(dummy) → xrandr 按 persona 设分辨率 → fcitx5/观测 → PulseAudio → neko server → Chrome
 neko 只负责抓屏推流与输入回注，不接管 Chrome 生命周期（避免两套进程管理权打架）。
 
 输入：/persona/persona.yaml（只读挂载）
@@ -44,10 +44,14 @@ OBSERVABILITY_DAEMON = "/opt/tishen/scripts/observability-daemon.sh"
 XORG_CONFIG = "/opt/tishen/config/xorg-dummy.conf"
 XORG_RUNTIME_CONFIG = "/run/tishen/xorg-persona.conf"
 NEKO_BIN = "/opt/neko/neko"                     # L5 流层安装的 neko v2 server 二进制
+PULSEAUDIO_BIN = "/usr/bin/pulseaudio"
+PULSEAUDIO_SOCKET = "/tmp/pulseaudio.socket"
+PULSEAUDIO_SERVER = f"unix:{PULSEAUDIO_SOCKET}"
 DISPLAY_ID = ":0"                               # 虚拟显示器编号
 X_READY_TIMEOUT = 15                            # 等待 X 就绪秒数
 CHROME_UID = 1000                               # ubuntu:noble 镜像内固定用户
 CHROME_GID = 1000
+CHROME_USER = "ubuntu"
 CHROME_HOME = "/home/ubuntu"
 CHROME_RUNTIME_DIR = f"/run/user/{CHROME_UID}"
 CHROME_PROFILE = Path("/persona/profile")
@@ -754,6 +758,7 @@ def build_neko_argv(persona) -> list[str]:
         NEKO_BIN,
         "serve",
         "--static=/var/www",
+        "--display=:0",
         # persona Xorg 用 CVT 60Hz modeline（xrandr 可显示 59.xx，XRandR
         # API 以整数 60 上报）；neko 要求该刷新率必须已在 X 中存在。
         f"--screen={persona.display.width}x{persona.display.height}@60",
@@ -779,6 +784,49 @@ def step7_5_neko(persona) -> None:
              "请在 docker run 时经 -e NEKO_PASSWORD=... 注入（由 tishen CLI 创建替身时随机生成）", 2)
     if neko_password.lower() in {"neko", "admin"}:
         fail("NEKO_PASSWORD 不得使用 neko 官方默认口令；请使用 tishen CLI 生成的随机口令", 2)
+
+    # neko 的音频管线固定采集 audio_output.monitor。官方 stream 配置已在
+    # Dockerfile 拷入 /etc/pulse/default.pa；以 Chrome 用户启动 PulseAudio，
+    # 并在拉起 neko 前等待 unix socket，避免启动竞态产生无声轨。
+    pulse_env = os.environ.copy()
+    pulse_env.update({
+        "HOME": CHROME_HOME,
+        "USER": CHROME_USER,
+        "DISPLAY": ":0",
+        "PULSE_SERVER": PULSEAUDIO_SERVER,
+    })
+    pulse_argv = [
+        PULSEAUDIO_BIN,
+        "--log-level=info",
+        "--disallow-module-loading",
+        "--disallow-exit",
+        "--exit-idle-time=-1",
+    ]
+    try:
+        Path(PULSEAUDIO_SOCKET).unlink(missing_ok=True)
+    except OSError as exc:
+        fail(f"PulseAudio 旧 socket 清理失败：{exc}", 2)
+    try:
+        _CHILDREN["pulseaudio"] = subprocess.Popen(
+            pulse_argv,
+            env=pulse_env,
+            user=CHROME_UID,
+            group=CHROME_GID,
+            extra_groups=(),
+        )
+    except OSError as exc:
+        fail(f"PulseAudio 虚拟音频启动失败：{exc}", 2)
+    for _ in range(30):
+        if Path(PULSEAUDIO_SOCKET).exists():
+            break
+        if _CHILDREN["pulseaudio"].poll() is not None:
+            fail("PulseAudio 虚拟音频进程提前退出，neko 拒绝以无音轨状态启动", 2)
+        time.sleep(0.1)
+    else:
+        fail(f"PulseAudio 虚拟音频 socket 未就绪：{PULSEAUDIO_SOCKET}", 2)
+    os.environ["PULSE_SERVER"] = PULSEAUDIO_SERVER
+    log(f"PulseAudio 虚拟音频已启动（pid={_CHILDREN['pulseaudio'].pid}）")
+
     # embed_url 以 admin 身份登录；将同一随机密钥注入 admin 口令，
     # 避免 neko 的官方默认值 "admin"。环境继承给子进程，不经 argv/ps 暴露。
     os.environ["NEKO_PASSWORD_ADMIN"] = neko_password
@@ -838,10 +886,11 @@ def _terminate(name: str, timeout: int = 10) -> None:
 
 
 def _shutdown(signum, _frame) -> None:
-    """SIGTERM 监督收尾顺序（SPEC-M2M3 §1.2）：Chrome → neko → fcitx5 → 观测守护（含虚拟屏），退出码 0。"""
+    """SIGTERM 收尾：Chrome → neko → PulseAudio → 其他守护，退出 0。"""
     log(f"收到信号 {signum}，按序收尾")
     _terminate("chrome")
     _terminate("neko")
+    _terminate("pulseaudio")
     _terminate("engine")
     _terminate("hook_bus")
     _terminate("fcitx5")
@@ -919,8 +968,9 @@ def main() -> None:
         fail(f"启动 Chrome 失败：{exc}")
     _boot_mark("chrome_launch")  # Chrome 已拉起（SPEC-M5 §5 末段）
     rc = _CHILDREN["chrome"].wait()
-    log(f"Chrome 退出（rc={rc}），按序收尾后台进程（neko → 引擎守护 → fcitx5 → 观测守护）")
+    log(f"Chrome 退出（rc={rc}），按序收尾后台进程（neko → PulseAudio → 引擎守护 → fcitx5 → 观测守护）")
     _terminate("neko")
+    _terminate("pulseaudio")
     _terminate("engine")
     _terminate("hook_bus")
     _terminate("fcitx5")

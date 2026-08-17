@@ -184,8 +184,12 @@ FROM tishen AS stream
 ARG NEKO_VERSION=2.8.0
 COPY --from=neko_v2 /usr/bin/neko /opt/neko/neko
 COPY --from=neko_v2 /var/www/ /var/www/
+# 复用同一官方镜像的 PulseAudio 虚拟 sink 配置（audio_output.monitor），
+# 避免仅拷贝 neko 二进制时遗漏它的音频运行时契约。
+COPY --from=neko_v2 /etc/pulse/default.pa /etc/pulse/default.pa
 RUN test -x /opt/neko/neko \
     && test -f /var/www/index.html \
+    && grep -F "sink_name=audio_output" /etc/pulse/default.pa \
     && /opt/neko/neko --version | grep -F "Version ${NEKO_VERSION}"
 
 LABEL tishen.stream.enabled="true" \
@@ -198,4 +202,6 @@ LABEL tishen.stream.enabled="true" \
 ENV NEKO_BIND=:8080 \
     NEKO_ICELITE=1 \
     NEKO_NAT1TO1=127.0.0.1 \
-    NEKO_UDPMUX=59000
+    NEKO_UDPMUX=59000 \
+    NEKO_IMPLICIT_CONTROL=true \
+    PULSE_SERVER=unix:/tmp/pulseaudio.socket
