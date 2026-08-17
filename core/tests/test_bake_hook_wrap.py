@@ -72,7 +72,10 @@ def bake():
 
 @pytest.fixture()
 def persona():
-    return types.SimpleNamespace(meta=types.SimpleNamespace(id="persona-test-01"))
+    return types.SimpleNamespace(
+        meta=types.SimpleNamespace(id="persona-test-01"),
+        display=types.SimpleNamespace(width=1366, height=768),
+    )
 
 
 @pytest.fixture()
@@ -134,17 +137,19 @@ def test_wrapper_generation_failure_degrades(bake, persona, monkeypatch, tmp_pat
     assert "降级" in capsys.readouterr().out
 
 
-def test_m1_image_without_neko_skips_stream_layer(bake, monkeypatch, tmp_path, capsys):
+def test_m1_image_without_neko_skips_stream_layer(
+        bake, persona, monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(bake, "NEKO_BIN", str(tmp_path / "missing-neko"))
     monkeypatch.setattr(bake, "_DRY_RUN", False)
     monkeypatch.delenv("NEKO_PASSWORD", raising=False)
 
-    bake.step7_5_neko()
+    bake.step7_5_neko(persona)
 
     assert "M1/P1 模式" in capsys.readouterr().out
 
 
-def test_stream_image_still_requires_neko_password(bake, monkeypatch, tmp_path):
+def test_stream_image_still_requires_neko_password(
+        bake, persona, monkeypatch, tmp_path):
     neko = tmp_path / "neko"
     neko.write_text("binary placeholder", encoding="utf-8")
     monkeypatch.setattr(bake, "NEKO_BIN", str(neko))
@@ -152,7 +157,59 @@ def test_stream_image_still_requires_neko_password(bake, monkeypatch, tmp_path):
     monkeypatch.delenv("NEKO_PASSWORD", raising=False)
 
     with pytest.raises(SystemExit) as exc:
-        bake.step7_5_neko()
+        bake.step7_5_neko(persona)
+    assert exc.value.code == 2
+
+
+def test_neko_argv_matches_persona_and_disables_default_stun(bake, persona):
+    argv = bake.build_neko_argv(persona)
+
+    assert argv == [
+        bake.NEKO_BIN,
+        "serve",
+        "--static=/var/www",
+        "--screen=1366x768@30",
+        "--iceserver=",
+    ]
+    assert "stun.l.google.com" not in " ".join(argv)
+
+
+def test_stream_neko_injects_random_admin_password_without_argv_leak(
+        bake, persona, monkeypatch, tmp_path):
+    neko = tmp_path / "neko"
+    neko.write_text("binary placeholder", encoding="utf-8")
+    captured = {}
+    monkeypatch.setattr(bake, "NEKO_BIN", str(neko))
+    monkeypatch.setattr(bake, "_DRY_RUN", False)
+    monkeypatch.setenv("NEKO_PASSWORD", "random-32-byte-secret")
+    monkeypatch.delenv("NEKO_PASSWORD_ADMIN", raising=False)
+    monkeypatch.setattr(
+        bake,
+        "spawn",
+        lambda name, argv, desc: captured.update(
+            name=name, argv=argv, desc=desc,
+            admin_password=os.environ.get("NEKO_PASSWORD_ADMIN"),
+        ),
+    )
+
+    bake.step7_5_neko(persona)
+
+    assert captured["name"] == "neko"
+    assert captured["admin_password"] == "random-32-byte-secret"
+    assert "random-32-byte-secret" not in " ".join(captured["argv"])
+
+
+@pytest.mark.parametrize("default_password", ["neko", "admin", "ADMIN"])
+def test_stream_neko_rejects_stock_passwords(
+        bake, persona, monkeypatch, tmp_path, default_password):
+    neko = tmp_path / "neko"
+    neko.write_text("binary placeholder", encoding="utf-8")
+    monkeypatch.setattr(bake, "NEKO_BIN", str(neko))
+    monkeypatch.setattr(bake, "_DRY_RUN", False)
+    monkeypatch.setenv("NEKO_PASSWORD", default_password)
+
+    with pytest.raises(SystemExit) as exc:
+        bake.step7_5_neko(persona)
     assert exc.value.code == 2
 
 

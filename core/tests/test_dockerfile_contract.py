@@ -81,3 +81,14 @@ def test_stream_stage_uses_digest_pinned_official_neko_assets():
     # v2.8.0 未发布 GitHub tar asset，也不得再允许空 SHA 绕过校验。
     assert "releases/download" not in stream_section
     assert "NEKO_SHA256" not in stream_section
+
+
+def test_stream_stage_uses_single_local_webrtc_udp_mux():
+    dockerfile = (REPO_ROOT / "image" / "Dockerfile").read_text(encoding="utf-8")
+    stream_section = dockerfile.split("FROM tishen AS stream", 1)[1]
+
+    assert "NEKO_BIND=:8080" in stream_section
+    assert "NEKO_ICELITE=1" in stream_section
+    assert "NEKO_NAT1TO1=127.0.0.1" in stream_section
+    assert "NEKO_UDPMUX=59000" in stream_section
+    assert "NEKO_EPR=" not in stream_section

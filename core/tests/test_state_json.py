@@ -133,15 +133,19 @@ def test_build_run_command_uses_detected_wsl_gpu(monkeypatch, home):
 
 
 def test_build_run_command_neko_args(home):
-    """docker run 追加 -p 127.0.0.1:0:8080 与 -e NEKO_PASSWORD=<口令>。"""
+    """docker run 追加 loopback HTTP/UDP mux 端口与随机口令。"""
     from tishen.persona import load
     from pathlib import Path
     persona = load(Path(__file__).parent / "fixtures" / "valid_cn.yaml")
     argv = docker_ctl.build_run_command(persona, "tishen/platform:latest-stable",
                                         home / "personas", "pw-xyz")
     # 端口只发布到宿主 loopback 的随机空闲端口
-    assert "-p" in argv
-    assert argv[argv.index("-p") + 1] == "127.0.0.1:0:8080"
+    published_ports = [argv[i + 1] for i, value in enumerate(argv) if value == "-p"]
+    assert published_ports == [
+        "127.0.0.1:0:8080",
+        f"127.0.0.1:{docker_ctl.NEKO_UDP_MUX_PORT}:"
+        f"{docker_ctl.NEKO_UDP_MUX_PORT}/udp",
+    ]
     # 口令经环境变量注入（persona-bake 第 7.5 步读取）
     assert "-e" in argv
     assert argv[argv.index("-e") + 1] == "NEKO_PASSWORD=pw-xyz"
