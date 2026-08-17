@@ -74,7 +74,8 @@ def align(handshakes, keylog_map: dict[str, str]) -> AlignmentReport:
     """握手清单 ↔ keylog 映射对齐，输出覆盖率报告。
 
     - handshakes: HandshakeRecord 列表（一个 ClientHello 一条）；
-    - keylog_map: parse_keylog() 产物 {client_random_hex: secret_hex}（小写键）；
+    - keylog_map: parse_keylog_index() 产物
+      {client_random_hex: representative_secret_hex}（小写键）；
     - 匹配不区分大小写（tshark 输出十六进制大小写依版本不定）。
     """
     report = AlignmentReport()

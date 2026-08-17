@@ -217,7 +217,7 @@ class ObservDaemon:
         shard_generation = _shard_generation(shard)
         recipient = _resolve_age_recipient(cfg)
         # ② keylog 重载（每片一载：浏览器持续追加，索引必须新鲜）
-        keylog_map = keylog.parse_keylog(cfg.keylog_path)
+        keylog_map = keylog.parse_keylog_index(cfg.keylog_path)
         try:
             # ④ 解密（tshark 批处理）
             packets = self.decrypt_fn(shard, cfg.keylog_path)

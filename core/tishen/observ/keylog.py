@@ -5,9 +5,9 @@
     CLIENT_HANDSHAKE_TRAFFIC_SECRET <client_random_hex> <secret_hex>
     ...（TLS 1.3 其余 label 同构）
 
-对齐器以 CLIENT_RANDOM 行的 client_random 为索引键与握手对齐；
-TLS 1.3 各 label 行同随机数不同密钥，这里统一按 label 分桶保存，
-对外主接口 parse_keylog() 只回 CLIENT_RANDOM 映射（M3 契约 §2.1 keylog.py）。
+对外兼容接口 parse_keylog() 只回 CLIENT_RANDOM 映射；现代 Chrome 的 TLS 1.3
+会话可能完全不写该标签，因此对齐器使用 parse_keylog_index() 合并所有合法标签的
+client_random，避免把已由 tshark 解密的 TLS 1.3 会话误报为 no_key。
 """
 
 from __future__ import annotations
@@ -71,3 +71,18 @@ def parse_keylog_all(path) -> dict[str, dict[str, str]]:
             return parse_keylog_lines(f)
     except OSError:
         return {}
+
+
+def parse_keylog_index(path) -> dict[str, str]:
+    """构造跨 TLS 1.2/1.3 标签的 ClientHello random 对齐索引。
+
+    NSS keylog 每个合法三列标签的第二列均为 ClientHello random。对齐只检查
+    random 是否存在，不使用映射值做解密；实际密钥仍由完整 keylog 文件交给
+    tshark。未知未来标签也由 parse_keylog_lines 做十六进制校验后纳入。
+    """
+    buckets = parse_keylog_all(path)
+    index: dict[str, str] = {}
+    for values in buckets.values():
+        for client_random, secret in values.items():
+            index.setdefault(client_random, secret)
+    return index
