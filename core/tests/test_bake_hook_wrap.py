@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -106,7 +107,10 @@ def test_wrapper_argv_baked_and_root_owned_mode0750(bake, persona, monkeypatch, 
     body = wrapper.read_text(encoding="utf-8")
     # argv 固化进脚本体，exec 转发 stdio
     assert body.startswith("#!/bin/sh\n")
-    assert "exec /opt/tishen/hook/tishen_native_host.py" in body
+    assert (
+        f"exec {shlex.quote(bake.sys.executable)} "
+        "/opt/tishen/hook/tishen_native_host.py"
+    ) in body
     assert "--persona-id persona-test-01" in body
     assert "--session-id sess-abc" in body
     assert f"--socket {bake.HOOK_SOCKET}" in body
