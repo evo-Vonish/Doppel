@@ -24,7 +24,6 @@ RUN apt-get ${APT_NETWORK_OPTS} update && apt-get ${APT_NETWORK_OPTS} install -y
     x11-xserver-utils \
     x11-utils \
     xcvt \
-    mesa-utils \
     pulseaudio \
     dbus-x11 \
     libgstreamer1.0-0 \
@@ -111,6 +110,12 @@ RUN apt-get ${APT_NETWORK_OPTS} update && apt-get ${APT_NETWORK_OPTS} install -y
     tcpdump \
     age \
     tshark \
+    && rm -rf /var/lib/apt/lists/*
+
+# 格 3 真机 GPU 门禁工具：最终镜像须能直接运行 `glxinfo -B`。独立小层
+# 避免仅变更诊断工具就使 700MB 显示/媒体运行时层失去缓存。
+RUN apt-get ${APT_NETWORK_OPTS} update && apt-get ${APT_NETWORK_OPTS} install -y --no-install-recommends \
+    mesa-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # 拷贝镜像层自带资产：入口脚本、配置模板、观测守护
